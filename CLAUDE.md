@@ -125,9 +125,11 @@ Full conventions live in `.claude/skills/opentofu-style-guide/SKILL.md`.
 - `opentofu-drift-detect` — detects state↔cloud divergence via refresh-only
   plans, classifies each finding, and proposes branched HCL fixes. Never
   applies. `make drift-check` is the shortcut entry point.
+- `opentofu-tftest-author` — authors `.tftest.hcl` tests for modules and
+  root configs. Plan-first with `mock_provider "aws" {}`; apply tests only
+  against Moto with explicit opt-in. `tofu test` is the runner.
 
-(Refactor-to-module, tftest-author, and AWS-import skills land in
-subsequent iterations.)
+(Refactor-to-module and AWS-import skills land in subsequent iterations.)
 
 ## MCP servers
 
