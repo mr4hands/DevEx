@@ -153,8 +153,10 @@ your shell — see the Real-AWS workflow section.
   management via the `import { }` block + `tofu plan
   -generate-config-out`. Authors changes on a branch; never runs the
   denied `tofu import` CLI or `apply`.
-
-(Refactor-to-module lands in a subsequent iteration.)
+- `opentofu-refactor-to-module` — extracts resources from a root config
+  into a reusable module under `modules/`, with `moved { }` blocks so
+  the state migrates without destroy-and-recreate. Gold standard is a
+  post-refactor plan that shows zero changes.
 
 ## MCP servers
 
