@@ -1,0 +1,15 @@
+{
+  "_comment": "Opt-in AWS API MCP. To enable: merge this server entry into .mcp.json and restart Claude Code. Honors the boto3 credential chain, including AWS_ENDPOINT_URL_* set by dev.local.env — so launching Claude Code from a Moto-sourced shell makes this MCP talk to Moto; launching from a vanilla shell makes it talk to real AWS.",
+  "mcpServers": {
+    "awslabs.aws-api-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-api-mcp-server@latest"
+      ],
+      "env": {
+        "READ_OPERATIONS_ONLY": "true",
+        "AWS_REGION": "us-east-1"
+      }
+    }
+  }
+}

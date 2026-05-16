@@ -131,10 +131,30 @@ subsequent iterations.)
 
 ## MCP servers
 
-Deferred until verified. The plan calls for an OpenTofu Registry MCP and an
-AWS read-only MCP; current community implementations need to be vetted before
-wiring into `.mcp.json`. Until then, Claude relies on its own knowledge and
-the registry docs reachable via WebFetch when needed.
+Wired in `.mcp.json` at the repo root. Claude Code prompts to trust each
+server the first time it loads.
+
+- **`terraform`** (enabled by default) — `hashicorp/terraform-mcp-server`
+  pinned to `0.5.2`, run via Docker. Queries the Terraform Registry for
+  provider/module docs. Works for `hashicorp/aws` since registry content is
+  identical between Terraform and OpenTofu registries. Needs outbound
+  network access to `registry.terraform.io`; no AWS credentials required.
+  MPL-2.0.
+
+- **`awslabs.aws-api-mcp-server`** (opt-in, real-AWS mostly) — config lives
+  in `.mcp.aws.example.json`. Merge that entry into `.mcp.json` when you
+  want it. Launches via `uvx`, restricted with `READ_OPERATIONS_ONLY=true`
+  out of the box. Uses the boto3 credential chain, which honors
+  `AWS_ENDPOINT_URL_*`, so launching Claude Code from a `dev.local.env`-
+  sourced shell makes it talk to Moto; a vanilla shell makes it talk to
+  real AWS. Apache-2.0.
+
+- **`aws-core` (`aws/agent-toolkit-for-aws`)** — not wired. The bundled MCP
+  is the AWS-hosted `aws-mcp.us-east-1.api.aws` endpoint, which can't be
+  pointed at Moto. The 14 bundled skills are CDK/CloudFormation/Amplify-
+  focused and don't apply to this OpenTofu repo. Worth a second look once
+  we're regularly running against real AWS; even then, prefer cherry-
+  picking the MCP entry rather than installing the whole plugin.
 
 ## Known Moto caveats
 
