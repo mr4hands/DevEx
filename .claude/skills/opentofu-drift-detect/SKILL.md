@@ -103,7 +103,9 @@ Once direction is confirmed:
 3. Re-run `tofu plan -no-color` and confirm the expected end state for
    each fix type.
 4. **Stop.** Stage the changes with `git add <files>` and leave the branch
-   in place. Do not commit. Do not apply. Hand back to the human.
+   in place. Do not commit. Do not apply. Hand back to the human — they
+   review `git diff --staged`, then (typically) `gh pr create --fill` to
+   open the handoff as a PR for CI to gate.
 
 ## What you must not do
 
@@ -161,7 +163,8 @@ Per-resource:
     Proposed fix: <direction + one-line summary>
 
 Branch:           drift/<...>   (NOT pushed; staged changes ready)
-Next step:        human runs `git diff --staged`, then `tofu plan` on
-                  the branch, then `tofu apply` if intent matches
+Next step:        human runs `git diff --staged`, opens a PR via
+                  `gh pr create --fill`, waits for CI green, then
+                  `tofu apply` locally if intent matches
 Manual state ops: <exact tofu state commands needed, or "none">
 ```

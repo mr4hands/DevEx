@@ -151,8 +151,9 @@ Once direction is confirmed:
    `opentofu-drift-detect`. Apply with confidence.
 
 6. **Stop.** Stage the changes with `git add <files>`. Do not commit.
-   Do not apply. Hand the branch back to the human with a clear report
-   (format below). They run `tofu apply` to perform the import.
+   Do not apply. Hand the branch back to the human — they review
+   `git diff --staged`, open a PR via `gh pr create --fill` for CI to
+   gate, then `tofu apply` locally to perform the import after merge.
 
 ## What you must not do
 
@@ -234,7 +235,8 @@ Files modified:
   - live/dev/imported.generated.tf   (deleted after merge)
 
 Branch:           import/<...>      (NOT pushed; staged changes ready)
-Next step:        human runs `git diff --staged`, then `tofu plan` on
-                  the branch, then `tofu apply` to perform the import
+Next step:        human runs `git diff --staged`, opens a PR via
+                  `gh pr create --fill`, waits for CI green, then
+                  `tofu apply` locally to perform the import after merge
 Manual state ops: <exact tofu state commands needed, or "none">
 ```
