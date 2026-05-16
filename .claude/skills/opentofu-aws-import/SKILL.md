@@ -69,9 +69,23 @@ Once direction is confirmed:
    git checkout -b import/<workspace-slug>/<resource-slug>
    ```
 
-2. **Write a minimal `import { }` block + stub resource** in the target
-   workspace. The stub only needs enough to make `tofu plan` happy; the
-   real config will be filled in by `-generate-config-out`:
+2. **Write the `import { }` block.** Two variants:
+
+   **A. Import block only** (when you don't know the resource's required
+   arguments). No `resource {}` block — step 3's
+   `-generate-config-out` will harvest every readable attribute from
+   cloud and write the full resource block to file.
+   ```hcl
+   import {
+     to = aws_s3_bucket.imported_logs
+     id = "my-existing-bucket-name"
+   }
+   ```
+
+   **B. Import block + minimal stub** (when you know the resource type
+   and its bare-minimum arguments). Step 3 will plan the import but
+   *will not* generate a file — `-generate-config-out` only fires when
+   the import's target address has no matching `resource` block.
    ```hcl
    import {
      to = aws_s3_bucket.imported_logs
@@ -83,7 +97,11 @@ Once direction is confirmed:
    }
    ```
 
-3. **Generate config from reality:**
+   Variant B is cleaner when you know the schema (the path the
+   `s3-bucket` and `vpc` modules are built on); variant A is the
+   fallback for unfamiliar resource types.
+
+3. **Generate config from reality (variant A):**
    ```bash
    tofu plan -generate-config-out=imported.generated.tf -no-color > /tmp/import-plan.txt 2>&1
    echo "exit=$?"
@@ -122,6 +140,15 @@ Once direction is confirmed:
      Decide: tighten the HCL to match (the import is "accept cloud"),
      or leave the HCL as the source of truth (the import will reconcile
      on apply).
+
+   **Expected exception — `default_tags` reconciliation.** Resources
+   created out-of-band (`aws s3 mb`, console clicks, any tool that
+   bypasses the provider) won't carry the provider's `default_tags`.
+   Bringing them under management correctly shows a `~ update` adding
+   `Environment` / `ManagedBy` / `Project` (or whatever's in
+   `default_tags`) to `tags_all`. This is intentional reconciliation,
+   not residual drift — same pattern documented in
+   `opentofu-drift-detect`. Apply with confidence.
 
 6. **Stop.** Stage the changes with `git add <files>`. Do not commit.
    Do not apply. Hand the branch back to the human with a clear report
