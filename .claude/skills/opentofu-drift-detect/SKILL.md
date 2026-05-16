@@ -69,7 +69,21 @@ Once direction is confirmed:
    ```
 2. Edit HCL to reflect the agreed-upon target state.
    - **Accept cloud** → update HCL args / module inputs to match what's
-     deployed. The next plan will show zero diff.
+     deployed. The post-fix plan usually shows zero diff *for the codified
+     attribute itself*, but watch for indirect reconciliations:
+     - **AWS tag drift via `PutBucketTagging` / `TagResource`**: these APIs
+       *replace* the entire tag set, so they wipe the provider's
+       `default_tags` as a side effect. Codifying the new cloud tag in HCL
+       yields a "1 to change" plan that re-adds the `default_tags` the
+       manual call erased. This is *intended* reconciliation, not residual
+       drift. If you genuinely need a zero-change post-fix plan, the only
+       paths are (a) revert the cloud tag instead — option below — or
+       (b) split this resource onto a provider alias without `default_tags`,
+       which trades observability (Project/Environment/ManagedBy lost on
+       this resource) for plan cleanliness; almost never worth it.
+     - Similar replace-not-merge semantics exist for IAM inline policies,
+       Lambda environment variables, and a handful of other AWS APIs.
+       Always re-check the post-fix plan, don't assume zero-diff.
    - **Revert cloud** → leave HCL unchanged. The next plan will show the
      revert as the only change.
    - **Import unmanaged resource** → emit an `import { }` block alongside
