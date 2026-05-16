@@ -1,0 +1,38 @@
+# Run `pre-commit autoupdate` periodically to bump rev tags.
+# `pre-commit install` once after cloning; hooks then run on every `git commit`.
+
+repos:
+  - repo: local
+    hooks:
+      - id: tofu-fmt
+        name: tofu fmt
+        entry: tofu fmt
+        language: system
+        files: \.(tf|tofu|tfvars)$
+        require_serial: true
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.2
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/bridgecrewio/checkov
+    rev: 3.2.250
+    hooks:
+      - id: checkov
+        args:
+          - --directory
+          - .
+          - --quiet
+          - --compact
+          - --framework
+          - terraform
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-added-large-files

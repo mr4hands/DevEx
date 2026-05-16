@@ -1,0 +1,29 @@
+# Local-emulator backend config. Copied to backend.hcl by `make init-dev-local`.
+# To use manually:
+#   cp backend.local.hcl.example backend.hcl
+#   source ../../dev.local.env
+#   tofu init -backend-config=backend.hcl
+#
+# Bucket name embeds Moto's default account ID (123456789012). If you switch
+# to LocalStack later, change to 000000000000.
+
+bucket         = "devex-platform-tfstate-123456789012-us-east-1"
+key            = "live/dev/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "devex-platform-tfstate-locks"
+kms_key_id     = "alias/devex-platform-tfstate"
+
+endpoints = {
+  s3       = "http://localhost:4566"
+  dynamodb = "http://localhost:4566"
+  iam      = "http://localhost:4566"
+  sts      = "http://localhost:4566"
+}
+
+force_path_style            = true
+skip_credentials_validation = true
+skip_metadata_api_check     = true
+skip_requesting_account_id  = true
+skip_region_validation      = true
+access_key                  = "test"
+secret_key                  = "test"

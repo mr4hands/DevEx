@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(tofu fmt:*)",
+      "Bash(tofu validate:*)",
+      "Bash(tofu plan:*)",
+      "Bash(tofu init:*)",
+      "Bash(tofu test:*)",
+      "Bash(tofu version:*)",
+      "Bash(tofu output:*)",
+      "Bash(tofu providers:*)",
+      "Bash(tofu state list:*)",
+      "Bash(tofu state show:*)",
+      "Bash(tofu graph:*)",
+      "Bash(aws sts get-caller-identity:*)",
+      "Bash(aws s3 ls:*)",
+      "Bash(aws s3api list-buckets:*)",
+      "Bash(aws s3api get-bucket-:*)",
+      "Bash(aws ec2 describe-:*)",
+      "Bash(aws iam list-:*)",
+      "Bash(aws iam get-:*)",
+      "Bash(aws kms list-:*)",
+      "Bash(aws kms describe-key:*)",
+      "Bash(aws dynamodb list-tables:*)",
+      "Bash(aws dynamodb describe-table:*)",
+      "Bash(checkov:*)",
+      "Bash(tflint:*)",
+      "Bash(gitleaks:*)",
+      "Bash(pre-commit run:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(docker compose up:*)",
+      "Bash(docker compose down:*)",
+      "Bash(docker compose ps:*)",
+      "Bash(docker compose logs:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker logs:*)",
+      "Bash(make help:*)",
+      "Bash(make local-up:*)",
+      "Bash(make local-down:*)",
+      "Bash(make local-clean:*)",
+      "Bash(make local-logs:*)",
+      "Bash(make local-status:*)",
+      "Bash(make bootstrap-local:*)",
+      "Bash(make destroy-bootstrap-local:*)",
+      "Bash(make init-dev-local:*)",
+      "Bash(make plan-dev:*)",
+      "Bash(make fmt:*)",
+      "Bash(make validate:*)",
+      "Bash(make test:*)"
+    ],
+    "deny": [
+      "Bash(tofu apply:*)",
+      "Bash(tofu destroy:*)",
+      "Bash(tofu state rm:*)",
+      "Bash(tofu state mv:*)",
+      "Bash(tofu state push:*)",
+      "Bash(tofu force-unlock:*)",
+      "Bash(tofu import:*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v tofu >/dev/null 2>&1 && tofu fmt -recursive >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}

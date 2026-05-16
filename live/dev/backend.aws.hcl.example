@@ -1,0 +1,9 @@
+# Copy to backend.hcl after running the bootstrap module, then:
+#   tofu init -backend-config=backend.hcl
+# Values come from `tofu -chdir=../../bootstrap output`.
+
+bucket         = "devex-platform-tfstate-<ACCOUNT_ID>-us-east-1"
+key            = "live/dev/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "devex-platform-tfstate-locks"
+kms_key_id     = "alias/devex-platform-tfstate"

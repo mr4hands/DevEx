@@ -1,0 +1,40 @@
+# OpenTofu / Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+*.tfplan
+crash.log
+crash.*.log
+
+# Variable files commonly carrying secrets
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI config
+.terraformrc
+terraform.rc
+
+# Local backend config (may contain account-specific values)
+backend.hcl
+
+# Local-emulator persisted data and per-user real-AWS env file
+.moto-data/
+.localstack-data/
+dev.aws.env
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Local env
+.env
+.env.local
