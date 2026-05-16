@@ -111,6 +111,30 @@ run "plan_with_versioning_disabled" {
 Inside a `run` block, you assert against **resource addresses** in
 addition to outputs — every resource the module creates is in scope.
 
+### Set-vs-list trap: why `one(...)` wraps these blocks
+
+Above, both `rule` (on
+`aws_s3_bucket_server_side_encryption_configuration`) and
+`versioning_configuration` (on `aws_s3_bucket_versioning`) are wrapped
+in `one(...)`. That's not stylistic — the AWS provider declares these
+nested blocks as **sets**, not lists. Sets can't be positionally
+indexed, so writing `.rule[0]` fails at plan with:
+
+```
+Block type "rule" is represented by a set of objects, and set elements
+do not have addressable keys.
+```
+
+`one()` returns the single element of a 1-element collection (set, list,
+or tuple) and errors if the collection has 0 or more than 1 element —
+exactly the invariant you want when a `MaxItems: 1` block is in play.
+
+The inner `apply_server_side_encryption_by_default` block is a list and
+*is* positionally indexed (`[0]`). So you'll often see mixed access:
+`one(outer_set).inner_list[0].attr`. When in doubt, check the provider
+schema or just run `tofu test` — the error message tells you which
+collection type the schema actually uses.
+
 ## Failure-path tests
 
 For variable `validation` blocks, prove they reject what they're meant
