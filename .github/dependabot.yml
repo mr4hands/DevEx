@@ -1,0 +1,18 @@
+version: 2
+
+# Auto-bumps versions of GitHub Actions used in .github/workflows/.
+# Terraform-side dependencies are intentionally not tracked here: provider
+# versions are pinned by `~> 5.0` in modules/, and module-source pins live
+# inside each module call — Dependabot's terraform support adds churn
+# without much signal in a workspace this small.
+
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
