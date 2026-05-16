@@ -122,9 +122,12 @@ Full conventions live in `.claude/skills/opentofu-style-guide/SKILL.md`.
 ## Agent skills loaded from `.claude/skills/`
 
 - `opentofu-style-guide` — enforces conventions above on every HCL change.
+- `opentofu-drift-detect` — detects state↔cloud divergence via refresh-only
+  plans, classifies each finding, and proposes branched HCL fixes. Never
+  applies. `make drift-check` is the shortcut entry point.
 
-(Drift remediation, refactor-to-module, tftest-author, and AWS-import skills
-land in subsequent iterations.)
+(Refactor-to-module, tftest-author, and AWS-import skills land in
+subsequent iterations.)
 
 ## MCP servers
 

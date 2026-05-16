@@ -52,6 +52,11 @@ plan-dev:  ## tofu plan in live/dev
 	  cd live/dev && \
 	  tofu plan
 
+drift-check:  ## Refresh-only plan to detect drift in live/dev (exit 2 = drift)
+	. ./dev.local.env && \
+	  cd live/dev && \
+	  tofu plan -refresh-only -detailed-exitcode -no-color
+
 # ----- Local hygiene -----
 
 fmt:  ## Format all HCL recursively
