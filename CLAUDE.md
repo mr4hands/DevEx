@@ -119,6 +119,27 @@ Full conventions live in `.claude/skills/opentofu-style-guide/SKILL.md`.
   `attach-*`, `detach-*`) are not pre-allowed and will prompt every time.
 - Secrets never enter the repo. Use AWS profile credentials and (later) Infisical.
 
+## CI
+
+`.github/workflows/ci.yml` runs on every PR and push to `main`. It's an
+offline gate by design — there are no AWS credentials in the runner, no
+Moto service spun up, and no real cloud touched:
+
+- `tofu fmt -recursive -check -diff` — formatting must already be clean.
+- `tofu init -backend=false && tofu validate` on `bootstrap/` and
+  `live/dev/`. `-backend=false` skips the S3 backend in `live/dev` so
+  init doesn't need cloud reachability.
+- `tofu init -backend=false && tofu validate && tofu test` on every
+  directory under `modules/`. Module tests use `mock_provider "aws" {}`
+  so they need no AWS at all.
+
+Deliberately out of scope today: `tofu plan` (would need a backend or
+Moto-as-service), `tofu apply` (forever — never in CI), `checkov` (until
+the Python 3.14 cert-verify issue is fixed locally and wired in
+intentionally), `gitleaks` (covered by pre-commit; can promote to CI
+later). Apply against real AWS remains a manual, deliberate act from
+your shell — see the Real-AWS workflow section.
+
 ## Agent skills loaded from `.claude/skills/`
 
 - `opentofu-style-guide` — enforces conventions above on every HCL change.

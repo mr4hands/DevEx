@@ -1,0 +1,55 @@
+name: ci
+
+# Moto-only project: CI never has AWS credentials and never touches real
+# cloud. All checks here are offline-safe — fmt, validate, and tofu test
+# against modules that mock the AWS provider. Plan/apply against Moto is
+# left to local dev because spinning a Moto service in CI buys little
+# until we have apply-time tests.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.12.0
+
+      - name: tofu fmt -check -recursive
+        run: tofu fmt -recursive -check -diff
+
+      - name: validate bootstrap
+        working-directory: bootstrap
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate
+
+      - name: validate live/dev
+        working-directory: live/dev
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate
+
+      - name: validate + test every module
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for d in modules/*/; do
+            echo "::group::$d"
+            (
+              cd "$d"
+              tofu init -backend=false -input=false
+              tofu validate
+              tofu test
+            )
+            echo "::endgroup::"
+          done
