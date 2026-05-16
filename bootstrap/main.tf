@@ -41,6 +41,30 @@ resource "aws_kms_key" "tfstate" {
   description             = "Encrypts OpenTofu state and plan artifacts for ${var.name_prefix}."
   deletion_window_in_days = 7
   enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.tfstate_kms.json
+}
+
+# Locked-down key policy: account root has full admin; no broader grants.
+# This is the AWS-recommended default key policy — it delegates auth to IAM
+# so individual users/roles in this account control access via their own
+# policies. Within a key policy, `resources = ["*"]` resolves to "this
+# key" — the policy itself can't reference other resources.
+data "aws_iam_policy_document" "tfstate_kms" {
+  # checkov:skip=CKV_AWS_111: Account-root-as-admin is the default key policy pattern; delegates auth to IAM rather than maintaining a sprawling explicit grant list.
+  # checkov:skip=CKV_AWS_356: In a KMS key policy, `resources = ["*"]` means "this key" — the policy itself cannot reference other resources.
+  # checkov:skip=CKV_AWS_109: Same IAM-delegation pattern; permissions management is gated by the account root's own IAM policies.
+  statement {
+    sid    = "AllowAccountRootFullAdmin"
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${local.account_id}:root"]
+    }
+
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_kms_alias" "tfstate" {
@@ -90,5 +114,14 @@ resource "aws_dynamodb_table" "tfstate_lock" {
   attribute {
     name = "LockID"
     type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.tfstate.arn
   }
 }

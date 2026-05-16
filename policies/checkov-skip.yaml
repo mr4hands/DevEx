@@ -1,0 +1,46 @@
+# Project-wide checkov skips. Each entry MUST be accompanied by a reason
+# comment immediately above it. Resource-specific skips live as inline
+# `# checkov:skip=CKV_XXX:reason` comments on the resource itself, not here.
+#
+# Adding a skip:
+#   1. Confirm the rule genuinely doesn't apply (out of POC scope) or that
+#      the cost of compliance outweighs the value in our context.
+#   2. Add the check ID below with a reason comment above it.
+#   3. Re-run `pre-commit run checkov --all-files` and confirm the count drops.
+#
+# Removing a skip:
+#   1. Remove the line + its reason comment.
+#   2. Either fix the offending HCL or add an inline skip if the rule
+#      genuinely contradicts a specific resource's purpose.
+
+skip-check:
+
+  # Single-region POC. Cross-region S3 replication is out of scope until/
+  # unless we adopt a multi-region story; the source/destination both need
+  # to exist, which doubles storage cost for no benefit at this stage.
+  - CKV_AWS_144
+
+  # S3 access logging requires a separate log-destination bucket. A
+  # single-bucket lab can't satisfy this without spawning a second
+  # bucket whose only purpose is to hold logs no one reads. Revisit when
+  # a centralized log sink exists (CloudWatch Logs aggregator or a real
+  # log bucket with retention).
+  - CKV_AWS_18
+
+  # Lab buckets hold transient state with no retention requirements that
+  # justify a lifecycle policy (transition to IA/Glacier, expire old
+  # versions, etc.). Revisit when a bucket holds production-style data
+  # or hits the cost threshold where IA tiering matters.
+  - CKV2_AWS_61
+
+  # No event-driven pipeline in scope. S3 → Lambda / SNS / SQS bindings
+  # are a downstream concern. Revisit when a bucket actually feeds an
+  # event consumer.
+  - CKV2_AWS_62
+
+  # VPC flow log destination (CloudWatch Logs group or S3 bucket) is a
+  # caller-level concern, not a module default — choosing the wrong
+  # destination is harder to undo than adding flow logs later. The VPC
+  # module exposes vpc_id; the caller wires flow logs in its own
+  # composition once an observability stack exists.
+  - CKV2_AWS_11

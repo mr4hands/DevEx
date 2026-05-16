@@ -30,6 +30,8 @@ repos:
           # costs no coverage — all CKV_/CKV2_ built-in rules still run —
           # and it makes commits work offline.
           - --skip-download
+          - --config-file
+          - policies/checkov-skip.yaml
           - --directory
           - .
           - --quiet

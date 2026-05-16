@@ -6,6 +6,19 @@ resource "aws_vpc" "this" {
   tags = merge(local.name_tag, var.tags)
 }
 
+# AWS auto-creates a default SG on every VPC. Adopt it explicitly and
+# strip every rule so it can't be used as a permissive fallback.
+resource "aws_default_security_group" "this" {
+  vpc_id = aws_vpc.this.id
+
+  tags = merge(
+    var.tags,
+    {
+      Name = "${var.name}-default-locked"
+    },
+  )
+}
+
 resource "aws_internet_gateway" "this" {
   vpc_id = aws_vpc.this.id
 
@@ -13,6 +26,8 @@ resource "aws_internet_gateway" "this" {
 }
 
 resource "aws_subnet" "public" {
+  # checkov:skip=CKV_AWS_130: Public subnets must assign public IPs by definition;
+  # the whole point of this resource is the public-egress side of the VPC.
   for_each = var.public_subnets
 
   vpc_id                  = aws_vpc.this.id
