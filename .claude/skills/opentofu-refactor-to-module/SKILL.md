@@ -152,8 +152,10 @@ Once direction is confirmed:
    `modules/<name>/`. All runs pass.
 
 8. **Stop.** Stage everything with `git add <files>`. Do not commit.
-   Do not apply. Hand the branch back to the human with the report
-   below.
+   Do not apply. Hand the branch back to the human — they review
+   `git diff --staged`, open a PR via `gh pr create --fill` for CI to
+   gate, then `tofu apply` locally after merge to migrate state
+   addresses.
 
 ## On dropping `moved { }` blocks later
 
@@ -257,9 +259,10 @@ Files modified:
   - modules/<name>/tests/plan.tftest.hcl  (new)
 
 Branch:           refactor/<...>     (NOT pushed; staged changes ready)
-Next step:        human runs `git diff --staged`, then `tofu plan` on
-                  the branch (confirm 0 diff), then `tofu apply` to
-                  migrate state addresses
+Next step:        human runs `git diff --staged` + `tofu plan` (confirm
+                  0 diff), opens a PR via `gh pr create --fill`, waits
+                  for CI green, then `tofu apply` locally after merge
+                  to migrate state addresses
 moved {} cleanup: keep / remove-after-first-apply
 Manual state ops: <exact tofu state commands needed, or "none">
 ```

@@ -119,6 +119,28 @@ Full conventions live in `.claude/skills/opentofu-style-guide/SKILL.md`.
   `attach-*`, `detach-*`) are not pre-allowed and will prompt every time.
 - Secrets never enter the repo. Use AWS profile credentials and (later) Infisical.
 
+## PR workflow
+
+`main` is protected on GitHub: direct pushes are blocked, `lint-and-test`
+(the CI job) must pass before merge, force-pushes and deletions disabled,
+linear history required. Every change flows through a PR.
+
+Solo-developer recipe:
+
+```bash
+git checkout -b feat/<short-slug>          # branch from main
+# ... edits + commits ...
+git push -u origin feat/<short-slug>       # push the branch
+gh pr create --fill                        # opens PR titled from last commit
+# CI runs automatically — green light required before merge.
+gh pr merge --squash                       # or --merge if you want the history
+git checkout main && git pull && git branch -D feat/<short-slug>
+```
+
+The agent skills' "stage on a branch, hand off" outputs land naturally
+here: the staged branch becomes the PR body, the human reviews
+`git diff --staged` and runs `gh pr create`.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every PR and push to `main`. It's an
@@ -169,6 +191,23 @@ server the first time it loads.
   identical between Terraform and OpenTofu registries. Needs outbound
   network access to `registry.terraform.io`; no AWS credentials required.
   MPL-2.0.
+
+- **`github`** (enabled by default) — `ghcr.io/github/github-mcp-server`
+  pinned to `v1.0.4`, run via Docker. Reads/writes PRs, issues, branches,
+  and workflow runs against your GitHub account. The agent uses it to
+  inspect CI status, open PRs from staged branches the skills produce,
+  and comment on its own work. Auth via the `GITHUB_PERSONAL_ACCESS_TOKEN`
+  env var — Claude Code passes it through to the container. To set up:
+
+  1. Create a fine-grained PAT at https://github.com/settings/personal-access-tokens/new
+     scoped to just `mr4hands/DevEx` (or your fork), with repo `Contents`,
+     `Pull requests`, `Issues`, and `Actions` permissions (read+write).
+  2. `export GITHUB_PERSONAL_ACCESS_TOKEN=<token>` in the shell where you
+     start Claude Code (or add it to your shell rc with appropriate
+     protection).
+  3. Restart Claude Code; it'll prompt to trust the server.
+
+  MIT.
 
 - **`awslabs.aws-api-mcp-server`** (opt-in, real-AWS mostly) — config lives
   in `.mcp.aws.example.json`. Merge that entry into `.mcp.json` when you
