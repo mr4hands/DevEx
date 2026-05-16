@@ -149,8 +149,12 @@ your shell — see the Real-AWS workflow section.
 - `opentofu-tftest-author` — authors `.tftest.hcl` tests for modules and
   root configs. Plan-first with `mock_provider "aws" {}`; apply tests only
   against Moto with explicit opt-in. `tofu test` is the runner.
+- `opentofu-aws-import` — brings out-of-band-created AWS resources under
+  management via the `import { }` block + `tofu plan
+  -generate-config-out`. Authors changes on a branch; never runs the
+  denied `tofu import` CLI or `apply`.
 
-(Refactor-to-module and AWS-import skills land in subsequent iterations.)
+(Refactor-to-module lands in a subsequent iteration.)
 
 ## MCP servers
 
