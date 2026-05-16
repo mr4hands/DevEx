@@ -20,7 +20,16 @@ repos:
     rev: 3.2.250
     hooks:
       - id: checkov
+        # Pinned to 3.12 because checkov 3.2.x bundles a rustworkx wheel
+        # that segfaults on Python 3.14 (Homebrew's current default on
+        # macOS). 3.12 is the most-tested target for checkov today.
+        language_version: python3.12
         args:
+          # --skip-download avoids the BridgeCrew guidelines API call
+          # (api0.prismacloud.io). We don't use BC_* skip IDs, so this
+          # costs no coverage — all CKV_/CKV2_ built-in rules still run —
+          # and it makes commits work offline.
+          - --skip-download
           - --directory
           - .
           - --quiet
