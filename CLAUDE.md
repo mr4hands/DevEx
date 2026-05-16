@@ -171,3 +171,12 @@ server the first time it loads.
   `make local-down && make local-up && make bootstrap-local` rebuilds in
   under a minute. Add a `--state-file` mount if you need cross-restart
   persistence.
+- **S3 tagging path changed in AWS provider 6.x.** The provider now calls
+  S3 Control's `TagResource` / `UntagResource` / `ListTagsForResource`
+  first, falling back to the classic `PutBucketTagging` only if the
+  principal lacks `s3:TagResource` / `s3:UntagResource` /
+  `s3:ListTagsForResource`. Because Moto's IAM stub permits everything,
+  the provider takes the *new* path against Moto — which may not be
+  mocked. If a bucket-tag plan fails with an unexpected SDK error, deny
+  those three actions on the test principal (or use Moto's policy mode)
+  to force the legacy path.

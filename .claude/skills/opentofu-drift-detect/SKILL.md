@@ -134,6 +134,15 @@ make drift-check
 # Expected: exit code 2, diff shows the new tag under module.logs_bucket.
 ```
 
+Note: `aws s3api put-bucket-tagging` is the classic `PutBucketTagging`
+call and works fine for *inducing* drift on Moto. The reconciliation
+plan, however, is authored by the AWS provider (6.x), which prefers the
+newer S3 Control `TagResource` API and only falls back to
+`PutBucketTagging` when the principal lacks `s3:TagResource`. If the
+post-fix `tofu plan` fails against Moto with an unexpected SDK error,
+that's the cause — see "S3 tagging path changed in AWS provider 6.x" in
+the root `CLAUDE.md` Moto caveats for the workaround.
+
 ## Report format
 
 End every run with this structure:
