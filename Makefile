@@ -5,7 +5,7 @@ SHELL := /bin/bash
 
 .PHONY: help local-up local-down local-clean local-logs local-status \
         bootstrap-local destroy-bootstrap-local init-dev-local plan-dev \
-        fmt validate test
+        apply-dev-local fmt validate test
 
 help:  ## List targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-26s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -51,6 +51,11 @@ plan-dev:  ## tofu plan in live/dev
 	. ./dev.local.env && \
 	  cd live/dev && \
 	  tofu plan
+
+apply-dev-local:  ## tofu apply in live/dev against Moto (auto-sources dev.local.env)
+	. ./dev.local.env && \
+	  cd live/dev && \
+	  tofu apply -auto-approve
 
 drift-check:  ## Refresh-only plan to detect drift in live/dev (exit 2 = drift)
 	. ./dev.local.env && \

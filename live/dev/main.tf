@@ -26,6 +26,21 @@ provider "aws" {
   }
 }
 
+data "aws_ami" "amazon_linux_2023" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023*-x86_64"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 module "logs_bucket" {
   source = "../../modules/s3-bucket"
 
@@ -52,4 +67,15 @@ module "network" {
   # internet egress to be functional. Flip on when private workloads
   # actually need outbound traffic.
   enable_nat_gateway = false
+}
+
+module "compute" {
+  source = "../../modules/ec2-instance"
+
+  instance_name = "my-test-ec2"
+  ami_id        = data.aws_ami.amazon_linux_2023.id
+  instance_type = "t3.micro"
+  vpc_id        = module.network.vpc_id
+  subnet_id     = module.network.public_subnet_ids["us-east-1a"]
+  allowed_cidrs = [module.network.vpc_cidr_block]
 }

@@ -17,6 +17,10 @@ context Claude Code reads when assisting on it.
 - `.claude/skills/` — packaged agent skills auto-loaded by Claude.
 - `docker-compose.yml`, `dev.local.env`, `Makefile` — Moto glue.
 - `research/` — background docs informing the platform design.
+- `app/` — web UI for chatting with a Claude agent about the plan and
+  clicking through individual resources. `app/backend/` is FastAPI +
+  `anthropic` SDK (shells out to `tofu show -json` read-only); `app/frontend/`
+  is Next.js 15 + Tailwind. See `app/README.md` for run instructions.
 
 ## Toolchain
 
@@ -56,6 +60,7 @@ source dev.local.env             # point shell at Moto
 make bootstrap-local             # create backend (S3, DynamoDB, KMS) inside Moto
 make init-dev-local              # init live/dev against the Moto backend
 make plan-dev                    # tofu plan — should be "No changes" until we add resources
+make apply-dev-local             # tofu apply against Moto (sources dev.local.env for you)
 
 # Tear down
 make destroy-bootstrap-local     # remove backend resources
@@ -115,6 +120,10 @@ Full conventions live in `.claude/skills/opentofu-style-guide/SKILL.md`.
 - Moto-scoped make targets (`make bootstrap-local`, `make destroy-bootstrap-local`)
   *are* pre-allowed because they only mutate the local emulator — no real
   cloud resources, no money, fully reversible via `make local-clean`.
+- `make apply-dev-local` exists as a shell convenience (it sources
+  `dev.local.env` and runs `tofu apply` against `live/dev/`) but is **not**
+  pre-allowed for Claude — applies stay manual on principle, same posture
+  as raw `tofu apply`.
 - Mutating AWS CLI calls against real AWS (`create-*`, `delete-*`, `put-*`,
   `attach-*`, `detach-*`) are not pre-allowed and will prompt every time.
 - Secrets never enter the repo. Use AWS profile credentials and (later) Infisical.

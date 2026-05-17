@@ -38,3 +38,11 @@ dev.aws.env
 # Local env
 .env
 .env.local
+
+# app/ (Node + Python)
+node_modules/
+.next/
+tsconfig.tsbuildinfo
+.venv/
+__pycache__/
+*.pyc
