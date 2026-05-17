@@ -27,17 +27,19 @@ jobs:
       - name: tofu fmt -check -recursive
         run: tofu fmt -recursive -check -diff
 
-      - name: validate bootstrap
+      - name: validate + test bootstrap
         working-directory: bootstrap
         run: |
           tofu init -backend=false -input=false
           tofu validate
+          tofu test
 
-      - name: validate live/dev
+      - name: validate + test live/dev
         working-directory: live/dev
         run: |
           tofu init -backend=false -input=false
           tofu validate
+          tofu test
 
       - name: validate + test every module
         run: |
