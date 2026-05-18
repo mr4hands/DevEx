@@ -192,6 +192,13 @@ def _normalize_block_types(block_types: dict[str, Any]) -> list[dict[str, Any]]:
 # the filesystem.
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
+# Format-only check for resource-type identifiers (used by DELETE +
+# parse-error fallback). Looser than `SUPPORTED_TYPES` membership
+# because delete needs to work for orphan files, AI-agent-written
+# resources, and types that get added between client and server
+# deploys.
+_DELETE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]+$")
+
 
 class ResourceWriteRequest(BaseModel):
     """The body of `POST /api/blueprint/resource`.
@@ -312,14 +319,24 @@ def _render_hcl_value(value: Any) -> str:
         return str(value)
     if isinstance(value, str):
         # Reference-looking strings (e.g., `aws_vpc.main.id`,
-        # `module.x.y`, `var.region`) and explicit `${...}` expressions
-        # get emitted bare so they're real HCL references rather than
+        # `module.x.y`, `var.region`) and `${...}` interpolation
+        # syntax get emitted as bare HCL expressions rather than
         # quoted literals. Phase 3's edge derivation depends on this:
         # `vpc_id = aws_vpc.main.id` produces a parseable interpolation
         # in the round-trip, which becomes a canvas edge; the literal
         # string `"aws_vpc.main.id"` wouldn't.
-        if _looks_like_reference(value):
-            return value
+        #
+        # Important: `${...}` is *string-interpolation* syntax, valid
+        # inside double-quoted strings but a syntax error in expression
+        # position in HCL 0.12+. So when the value is wrapped, we
+        # strip the `${...}` and emit the bare body. This matters
+        # because the round-trip from `tofu show` / python-hcl2 re-
+        # normalizes refs back to `${...}` form; saving the form
+        # verbatim would otherwise produce invalid HCL on the next
+        # save (`tofu validate` would reject it).
+        bare = _unwrap_interpolation(value)
+        if bare is not None and _looks_like_bare_reference(bare):
+            return bare
         # Heredoc for anything with a literal newline so the file stays
         # readable; otherwise an escaped one-liner.
         if "\n" in value:
@@ -343,24 +360,33 @@ def _render_hcl_value(value: Any) -> str:
 
 # Reference detection at write-time. Matches `<scope>.<name>(.<attr>)*`
 # where scope is a known HCL prefix (resource type, `module`, `var`,
-# `local`, `data`) or an explicit `${...}` interpolation. Designed to
-# be conservative: rejects strings with spaces, quotes, leading
-# punctuation, etc., so a literal text value isn't mis-emitted as code.
+# `local`, `data`). Designed to be conservative: rejects strings with
+# spaces, quotes, leading punctuation, etc., so a literal text value
+# isn't mis-emitted as code.
 _REF_PREFIX_RE = re.compile(
     r"^(?:aws_[a-z][a-z0-9_]*|module|var|local|data)\.[a-zA-Z_][a-zA-Z0-9_]*"
     r"(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*$"
 )
 
 
-def _looks_like_reference(value: str) -> bool:
-    """True when `value` should be emitted as a bare HCL reference
-    rather than a quoted string literal."""
+def _unwrap_interpolation(value: str) -> str | None:
+    """If `value` is a `${...}` interpolation, return the inside text;
+    otherwise return the trimmed value. Used at write time so we never
+    emit a literal `${...}` in expression position (which is invalid
+    HCL 0.12+ syntax)."""
     v = value.strip()
     if not v:
-        return False
+        return None
     if v.startswith("${") and v.endswith("}"):
-        return True
-    return bool(_REF_PREFIX_RE.match(v))
+        return v[2:-1].strip()
+    return v
+
+
+def _looks_like_bare_reference(value: str) -> bool:
+    """True when `value` is a recognized bare HCL reference (no
+    quotes, no interpolation wrapper). Use `_unwrap_interpolation`
+    first if the caller might be holding a `${...}` form."""
+    return bool(_REF_PREFIX_RE.match(value))
 
 
 def _hcl_key(key: str) -> str:
@@ -449,14 +475,20 @@ def list_resources() -> dict[str, Any]:
             parsed = _parse_resource_file(path)
         except (ValueError, Exception) as exc:  # noqa: BLE001
             # A malformed file shouldn't take down the whole canvas.
-            # Emit a placeholder node so the user can see + fix it
-            # rather than wondering why the resource vanished.
+            # Emit a placeholder node with type+name recovered from the
+            # filename (we wrote it ourselves as `<type>.<name>.tf`) so
+            # the user can still click Delete on it. Falls back to a
+            # synthetic placeholder pair if the filename doesn't match.
+            type_guess, name_guess = _split_filename(path.stem)
             resources.append(
                 {
-                    "type": "",
-                    "name": path.stem,
+                    "type": type_guess,
+                    "name": name_guess,
                     "attributes": {},
-                    "position": layout.get(path.stem, {"x": 0, "y": 0}),
+                    "position": layout.get(
+                        f"{type_guess}.{name_guess}",
+                        {"x": 0, "y": 0},
+                    ),
                     "parse_error": str(exc),
                     "filename": path.name,
                 }
@@ -509,6 +541,23 @@ def list_resources() -> dict[str, Any]:
         "resources": resources,
         "edges": edges,
     }
+
+
+def _split_filename(stem: str) -> tuple[str, str]:
+    """Split `<type>.<name>` (with no `.tf` extension) into the
+    `(type, name)` pair the canvas uses. Used by the parse-error
+    fallback so a malformed file still renders as a node the user can
+    Delete.
+
+    Returns `("unknown", stem)` if the filename doesn't match the
+    convention; both halves still pass the relaxed identifier checks
+    used by the DELETE endpoint, so the broken-file flow keeps
+    working."""
+    if "." in stem:
+        type_, _, name = stem.partition(".")
+        if _DELETE_TYPE_RE.match(type_) and _NAME_RE.match(name):
+            return type_, name
+    return "unknown", stem
 
 
 def _parse_resource_file(path: Path) -> dict[str, Any] | None:
@@ -593,11 +642,18 @@ def delete_resource(type_: str, name: str) -> dict[str, Any]:
     """Remove a resource from the canvas: deletes its `.tf` file and
     drops the matching `_layout.json` entry. Idempotent on missing
     files so a double-click in the UI doesn't 404.
+
+    The type check here is *format-only* — any valid HCL resource type
+    identifier is accepted, not just `SUPPORTED_TYPES`. The supported-
+    types list gates *writes*; deletion needs to work for anything the
+    user has on disk, including resources written by the AI agent
+    through its `Edit`/`Write` tools (Phase 4 hookup) and orphaned
+    files left by failed parses.
     """
-    if type_ not in SUPPORTED_TYPES:
+    if not _DELETE_TYPE_RE.match(type_):
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported resource type {type_!r}.",
+            detail=f"Invalid resource type identifier {type_!r}.",
         )
     if not _NAME_RE.match(name):
         raise HTTPException(

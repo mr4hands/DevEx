@@ -90,6 +90,13 @@ export function BlueprintNodeDrawer({
       return;
     }
     setSaveState({ status: "idle" });
+    // Parse-error nodes have no usable schema. Skip the fetch so we
+    // don't make a broken `/api/schemas` call; the drawer renders the
+    // error banner + Delete button instead of the form.
+    if (node.data.parseError) {
+      setSchema(null);
+      return;
+    }
     const type = node.data.resourceType;
     const cached = schemaCache.get(type);
     if (cached) {
@@ -286,12 +293,29 @@ export function BlueprintNodeDrawer({
       {/* Body */}
       <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-3 text-xs">
         {loading && <p className="text-muted-foreground">Loading schema…</p>}
+        {node.data.parseError && (
+          <section className="space-y-2">
+            <h3 className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-400">
+              File can&apos;t be parsed
+            </h3>
+            <p className="text-[11px] text-muted-foreground">
+              The backend couldn&apos;t parse{" "}
+              <span className="font-mono text-foreground">
+                {node.data.filename ?? `${node.data.resourceType}.${node.data.name}.tf`}
+              </span>
+              . Edit the file by hand, or delete the resource and re-create it from the palette.
+            </p>
+            <pre className="text-[10.5px] font-mono bg-muted/40 border border-red-200 dark:border-red-900 px-2 py-1.5 rounded-sm text-red-700 dark:text-red-400 overflow-x-auto whitespace-pre-wrap break-words">
+              {node.data.parseError}
+            </pre>
+          </section>
+        )}
         {error && (
           <div className="rounded-sm border border-red-200 dark:border-red-900 px-3 py-2 text-red-600 dark:text-red-400 whitespace-pre-wrap font-mono">
             {error}
           </div>
         )}
-        {schema && formState && (
+        {!node.data.parseError && schema && formState && (
           <>
             {/* Name */}
             <section>
@@ -394,26 +418,34 @@ export function BlueprintNodeDrawer({
         )}
       </div>
 
-      {/* Footer — Save + Delete */}
-      {schema && formState && (
+      {/* Footer — Save + Delete (Save hidden on parse-error nodes
+          since there's no form state to write). */}
+      {(schema && formState) || node.data.parseError ? (
         <div className="shrink-0 border-t border-border px-3 py-2.5 bg-muted/40 space-y-2">
           <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saveState.status === "saving" || !formState.name.trim()}
-              className="flex-1 inline-flex items-center justify-center gap-2 h-8 px-3 bg-accent hover:opacity-90 text-white text-xs font-medium rounded-sm transition-colors disabled:opacity-50"
-            >
-              {saveState.status === "saving" ? "Saving…" : "Save resource"}
-            </button>
+            {!node.data.parseError && schema && formState && (
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={
+                  saveState.status === "saving" || !formState.name.trim()
+                }
+                className="flex-1 inline-flex items-center justify-center gap-2 h-8 px-3 bg-accent hover:opacity-90 text-white text-xs font-medium rounded-sm transition-colors disabled:opacity-50"
+              >
+                {saveState.status === "saving" ? "Saving…" : "Save resource"}
+              </button>
+            )}
             <button
               type="button"
               onClick={handleDelete}
               disabled={saveState.status === "saving"}
               title="Remove resource (deletes the .tf file if it was saved)"
-              className="inline-flex items-center justify-center h-8 px-3 border border-border hover:bg-muted hover:border-red-300 dark:hover:border-red-800 text-xs text-foreground rounded-sm transition-colors disabled:opacity-50"
+              className={
+                "inline-flex items-center justify-center h-8 px-3 border border-border hover:bg-muted hover:border-red-300 dark:hover:border-red-800 text-xs text-foreground rounded-sm transition-colors disabled:opacity-50 " +
+                (node.data.parseError ? "flex-1" : "")
+              }
             >
-              Delete
+              {node.data.parseError ? "Delete broken file" : "Delete"}
             </button>
           </div>
           {saveState.status === "saved" && (
@@ -427,7 +459,7 @@ export function BlueprintNodeDrawer({
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

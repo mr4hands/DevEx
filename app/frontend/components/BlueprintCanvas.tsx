@@ -3,7 +3,9 @@
 import {
   Background,
   Controls,
+  Handle,
   MarkerType,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -58,6 +60,13 @@ export type BlueprintNodeData = {
    *  form uses these to pre-populate when an existing node is
    *  selected. Empty for newly-dropped nodes. */
   attributes?: Record<string, unknown>;
+  /** When set, the backend couldn't parse this resource's `.tf` file.
+   *  The drawer shows the error + a Delete button instead of the form,
+   *  so the user can recover from a malformed write. */
+  parseError?: string;
+  /** Original on-disk filename when known. Used as a fallback target
+   *  for Delete on parse-error nodes. */
+  filename?: string;
 } & Record<string, unknown>;  // index signature satisfies React Flow's Node constraint
 
 export type BlueprintNode = Node<BlueprintNodeData>;
@@ -354,6 +363,8 @@ function serverNodeFrom(
       family: meta.family,
       monogram: meta.monogram,
       attributes: r.attributes,
+      parseError: r.parse_error,
+      filename: r.filename,
     },
   };
 }
@@ -425,12 +436,24 @@ function ResourceNode({ data, selected }: NodeProps<BlueprintNode>) {
   const classes = FAMILY_CLASSES[meta.family];
   return (
     <div
-      className={`flex items-center gap-2 px-2 py-1.5 rounded-sm bg-background border ${
+      className={`relative flex items-center gap-2 px-2 py-1.5 rounded-sm bg-background border ${
         selected
           ? "border-accent ring-1 ring-accent"
           : "border-border hover:border-accent"
       } shadow-sm transition-colors`}
     >
+      {/* React Flow needs explicit `Handle` components on a custom
+          node so edge endpoints can attach somewhere. Both source and
+          target use the default handle id (null) so the auto-derived
+          edges from /api/blueprint/resources line up — those edges
+          don't carry sourceHandle/targetHandle ids either. Visually
+          subdued: tiny circle inset behind the chip on the left and
+          past the label on the right. */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!w-1.5 !h-1.5 !bg-border !border-0"
+      />
       <span
         className={`inline-flex items-center justify-center px-1.5 h-[20px] min-w-[28px] rounded-sm ring-1 ring-inset font-mono text-[11px] uppercase ${classes.chip}`}
       >
@@ -444,6 +467,11 @@ function ResourceNode({ data, selected }: NodeProps<BlueprintNode>) {
           {data.resourceType}
         </div>
       </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!w-1.5 !h-1.5 !bg-border !border-0"
+      />
     </div>
   );
 }
