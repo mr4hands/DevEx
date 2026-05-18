@@ -1,14 +1,26 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { streamChat } from "@/lib/api";
+import { metaFor } from "@/lib/toolLabels";
 import type { ChatMessage, ToolCall } from "@/lib/types";
 
+/**
+ * Chat panel rendering the agent's turn as an Activity Card (Claude Design
+ * Session 3, Variant A). Each assistant turn is one bordered card:
+ *
+ *   - Active state (still running): amber header with a pulsing dot +
+ *     "Reading X..." verb-target line.
+ *   - Completed state: stone header that's a collapsible button + a
+ *     stack of tool rows. Each row is click-to-expand to reveal its
+ *     input + output inline.
+ *
+ * The visible message text follows the card.
+ */
 export function ChatPanel({
   onToolResult,
 }: {
-  /** Fired after every tool result — useful to refresh the resource list. */
   onToolResult?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -17,13 +29,18 @@ export function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const send = useCallback(async () => {
     const trimmed = input.trim();
     if (!trimmed || busy) return;
 
     const userMsg: ChatMessage = { role: "user", content: trimmed };
-    const next: ChatMessage[] = [...messages, userMsg, { role: "assistant", content: "" }];
+    const next: ChatMessage[] = [
+      ...messages,
+      userMsg,
+      { role: "assistant", content: "" },
+    ];
     setMessages(next);
     setInput("");
     setBusy(true);
@@ -33,7 +50,7 @@ export function ChatPanel({
     abortRef.current = controller;
 
     try {
-      const history = next.slice(0, -1); // drop the empty placeholder we'll fill
+      const history = next.slice(0, -1);
       const stream = streamChat(history, controller.signal);
       let assistantText = "";
       const toolCalls: ToolCall[] = [];
@@ -102,103 +119,418 @@ export function ChatPanel({
     abortRef.current?.abort();
   }, []);
 
+  useEffect(() => {
+    // Auto-scroll to bottom on new content.
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [messages]);
+
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-border">
-        <h2 className="text-sm font-semibold">Chat</h2>
-        <p className="text-xs text-muted-foreground">
-          Ask about resources in <code>live/dev</code>. The agent can call{" "}
-          <code>get_plan_resources</code> to inspect them.
-        </p>
+    <div className="flex flex-col h-full min-h-0 bg-background">
+      {/* Local CSS keyframes for the dot-pulse + bouncing-dots animation.
+          Inlining here avoids a Tailwind v4 @theme extension just for two
+          short keyframes. */}
+      <style>{`
+        @keyframes cp-pulse { 0%,100% { transform: scale(1); opacity: 0.5 } 50% { transform: scale(1.8); opacity: 0 } }
+        @keyframes cp-dots  { 0%,20% { opacity: 0 } 50% { opacity: 1 } 100% { opacity: 0 } }
+        .cp-pulse-ring { animation: cp-pulse 1.6s infinite ease-out; }
+        .cp-dot1 { animation: cp-dots 1.2s infinite; animation-delay: 0s; }
+        .cp-dot2 { animation: cp-dots 1.2s infinite; animation-delay: .15s; }
+        .cp-dot3 { animation: cp-dots 1.2s infinite; animation-delay: .3s; }
+      `}</style>
+
+      {/* Header */}
+      <div className="shrink-0 flex items-center justify-between px-3 h-9 border-b border-border">
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          chat
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground">
+          claude · debug
+        </span>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+      {/* Message stream */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0">
         {messages.length === 0 && (
-          <p className="text-sm text-muted-foreground">
+          <p className="m-3 text-xs text-muted-foreground">
             Try: <em>what resources are in this plan?</em>
           </p>
         )}
         {messages.map((m, i) => (
-          <MessageBubble key={i} msg={m} />
+          <MessageBlock
+            key={i}
+            msg={m}
+            isLast={i === messages.length - 1}
+            busy={busy && i === messages.length - 1}
+          />
         ))}
         {error && (
-          <div className="text-xs text-red-600 dark:text-red-400 rounded border border-red-200 dark:border-red-900 px-3 py-2">
+          <div className="m-3 text-xs rounded-sm border border-red-200 dark:border-red-900 px-3 py-2 text-red-600 dark:text-red-400">
             {error}
           </div>
         )}
       </div>
 
-      <form
-        className="border-t border-border p-3 flex gap-2"
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <input
-          className="flex-1 rounded border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent"
-          placeholder={busy ? "thinking…" : "Ask about the plan"}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={busy}
-        />
-        {busy ? (
-          <button
-            type="button"
-            className="rounded bg-muted px-3 py-2 text-sm border border-border"
-            onClick={cancel}
-          >
-            Stop
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="rounded bg-accent px-3 py-2 text-sm text-white disabled:opacity-50"
-            disabled={!input.trim()}
-          >
-            Send
-          </button>
-        )}
-      </form>
+      {/* Composer */}
+      <div className="shrink-0 border-t border-border p-2 bg-muted/40">
+        <form
+          className="border border-border bg-background rounded-sm px-2 py-1.5 flex items-end gap-1.5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <textarea
+            ref={textareaRef}
+            rows={2}
+            className="flex-1 text-xs resize-none outline-none bg-transparent placeholder:text-muted-foreground/70"
+            placeholder={busy ? "thinking…" : "ask about the plan"}
+            value={input}
+            disabled={busy}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+          />
+          {busy ? (
+            <button
+              type="button"
+              className="h-6 px-2 text-[11px] bg-muted border border-border text-foreground rounded-sm transition-colors"
+              onClick={cancel}
+            >
+              stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="h-6 px-2 text-[11px] bg-accent hover:opacity-90 text-white rounded-sm transition-colors disabled:opacity-50"
+              disabled={!input.trim()}
+            >
+              send
+            </button>
+          )}
+        </form>
+      </div>
     </div>
   );
 }
 
-function MessageBubble({ msg }: { msg: ChatMessage }) {
-  const isUser = msg.role === "user";
-  return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[90%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
-          isUser
-            ? "bg-accent text-white"
-            : "bg-muted text-foreground border border-border"
-        }`}
-      >
-        {msg.toolCalls && msg.toolCalls.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-1">
-            {msg.toolCalls.map((tc) => (
-              <span
-                key={tc.id}
-                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-mono border ${
-                  tc.isError
-                    ? "bg-red-50 border-red-200 text-red-700 dark:bg-red-950 dark:border-red-900 dark:text-red-300"
-                    : "bg-background border-border text-muted-foreground"
-                }`}
-                title={JSON.stringify(tc.input)}
-              >
-                <span>{tc.isError ? "⚠" : "🔧"}</span>
-                <span>{tc.name}</span>
-                {tc.label && <span className="opacity-60">{tc.label}</span>}
-                {tc.summary && tc.summary !== "ok" && (
-                  <span className="opacity-60">— {tc.summary}</span>
-                )}
-              </span>
-            ))}
-          </div>
-        )}
-        {msg.content || (msg.role === "assistant" && <span className="opacity-50">…</span>)}
+function MessageBlock({
+  msg,
+  isLast,
+  busy,
+}: {
+  msg: ChatMessage;
+  isLast: boolean;
+  busy: boolean;
+}) {
+  if (msg.role === "user") {
+    return (
+      <div className="px-3 py-2">
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+          you
+        </div>
+        <div className="text-xs text-foreground leading-snug bg-muted rounded-sm px-2.5 py-2 border border-border whitespace-pre-wrap break-words">
+          {msg.content}
+        </div>
       </div>
+    );
+  }
+  // Assistant
+  return (
+    <div className="px-3 pt-1 pb-3">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        assistant
+      </div>
+      {msg.toolCalls && msg.toolCalls.length > 0 && (
+        <ActivityCard
+          toolCalls={msg.toolCalls}
+          // Active when the last call has no summary yet AND this is the
+          // current streaming turn.
+          active={busy && isLast && lastCallIsRunning(msg.toolCalls)}
+        />
+      )}
+      {msg.content && (
+        <div className="text-xs text-foreground leading-relaxed whitespace-pre-wrap break-words">
+          {msg.content}
+        </div>
+      )}
+      {!msg.content && busy && isLast && (!msg.toolCalls || msg.toolCalls.length === 0) && (
+        <ThinkingLine />
+      )}
     </div>
   );
+}
+
+function lastCallIsRunning(calls: ToolCall[]): boolean {
+  const last = calls[calls.length - 1];
+  return !!last && last.summary === undefined && last.isError === undefined;
+}
+
+function ActivityCard({
+  toolCalls,
+  active,
+}: {
+  toolCalls: ToolCall[];
+  active: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [openTool, setOpenTool] = useState<string | null>(null);
+
+  // When the turn finishes (active flips false), collapse the card by
+  // default to reclaim space. But keep the previously-opened tool open
+  // so the user doesn't lose their place. This is a syncs-prop-into-
+  // state pattern; the lint rule is overly cautious here.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => setCollapsed(!active), [active]);
+
+  if (active) {
+    const current = toolCalls[toolCalls.length - 1]!;
+    const meta = metaFor(current.name);
+    const target = meta.target(current.input ?? {});
+    return (
+      <div className="border border-border rounded-sm overflow-hidden mb-2">
+        <div className="flex items-center gap-2 px-2.5 h-8 bg-amber-50 dark:bg-amber-950/40 border-b border-border">
+          <PulsingDot />
+          <span className="text-[11px] text-foreground">
+            {meta.activeVerb}{" "}
+            <span className="font-mono text-foreground" title={target}>
+              {truncate(target, 32)}
+            </span>
+            <span className="cp-dot1">.</span>
+            <span className="cp-dot2">.</span>
+            <span className="cp-dot3">.</span>
+          </span>
+          <span className="ml-auto text-[10px] font-mono text-muted-foreground tabular-nums">
+            {toolCalls.length} tool{toolCalls.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        <ToolList
+          calls={toolCalls.slice(0, -1)}
+          openTool={openTool}
+          onToggle={setOpenTool}
+          showChevrons={false}
+        />
+      </div>
+    );
+  }
+
+  // Completed
+  return (
+    <div className="border border-border rounded-sm overflow-hidden mb-2">
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center gap-2 px-2.5 h-8 bg-muted hover:bg-muted/70 border-b border-border transition-colors"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="9"
+          height="9"
+          viewBox="0 0 10 10"
+          fill="none"
+          className={`text-muted-foreground transition-transform ${collapsed ? "" : "rotate-90"}`}
+        >
+          <path
+            d="M3 2l4 3-4 3"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="text-[11px] text-foreground">
+          Ran {toolCalls.length} tool{toolCalls.length === 1 ? "" : "s"}
+        </span>
+        <span className="ml-auto text-[10px] font-mono text-muted-foreground">
+          {collapsed ? "expand" : "collapse"}
+        </span>
+      </button>
+      {!collapsed && (
+        <ToolList
+          calls={toolCalls}
+          openTool={openTool}
+          onToggle={setOpenTool}
+          showChevrons
+        />
+      )}
+    </div>
+  );
+}
+
+function PulsingDot() {
+  return (
+    <span className="relative inline-flex items-center justify-center w-2 h-2">
+      <span className="absolute inset-0 rounded-full bg-amber-400 opacity-60 cp-pulse-ring" />
+      <span className="relative w-1.5 h-1.5 rounded-full bg-amber-500" />
+    </span>
+  );
+}
+
+function ToolList({
+  calls,
+  openTool,
+  onToggle,
+  showChevrons,
+}: {
+  calls: ToolCall[];
+  openTool: string | null;
+  onToggle: (id: string | null) => void;
+  showChevrons: boolean;
+}) {
+  return (
+    <ul className="text-[11px] divide-y divide-border">
+      {calls.map((tc) => {
+        const meta = metaFor(tc.name);
+        const target = meta.target(tc.input ?? {});
+        const open = openTool === tc.id;
+        return (
+          <li key={tc.id}>
+            <button
+              type="button"
+              onClick={() =>
+                showChevrons ? onToggle(open ? null : tc.id) : undefined
+              }
+              disabled={!showChevrons}
+              className="w-full flex items-center gap-2 px-2.5 h-7 text-left hover:bg-muted/60 transition-colors disabled:cursor-default disabled:hover:bg-transparent"
+            >
+              <StatusIcon isError={tc.isError} running={tc.summary === undefined && tc.isError === undefined} />
+              <span
+                className={`font-mono text-[10px] uppercase tracking-wide w-8 ${meta.labelColor}`}
+              >
+                {meta.label}
+              </span>
+              <span
+                className="font-mono text-[11px] text-foreground truncate min-w-0 flex-1"
+                title={target}
+              >
+                {target}
+              </span>
+              {tc.summary && (
+                <span
+                  className={
+                    "text-[10px] font-mono shrink-0 " +
+                    (tc.isError ? "text-red-600 dark:text-red-400" : "text-muted-foreground")
+                  }
+                >
+                  {truncate(tc.summary, 16)}
+                </span>
+              )}
+              {showChevrons && (
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="9"
+                  height="9"
+                  viewBox="0 0 10 10"
+                  fill="none"
+                  className={`text-muted-foreground/60 transition-transform ${open ? "rotate-90" : ""}`}
+                >
+                  <path
+                    d="M3 2l4 3-4 3"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              )}
+            </button>
+            {open && (
+              <div className="px-2.5 pb-2.5 pt-1 bg-muted/40 border-t border-border">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+                  input
+                </div>
+                <pre className="text-[10.5px] font-mono bg-background border border-border px-2 py-1.5 rounded-sm text-foreground overflow-x-auto leading-snug whitespace-pre-wrap break-words">
+                  {JSON.stringify(tc.input ?? {}, null, 2)}
+                </pre>
+                {tc.summary !== undefined && (
+                  <>
+                    <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2 mb-1 flex items-center justify-between">
+                      <span>result</span>
+                      <span
+                        className={
+                          "font-mono text-[10px] " +
+                          (tc.isError ? "text-red-600 dark:text-red-400" : "text-muted-foreground")
+                        }
+                      >
+                        {tc.isError ? "error" : "ok"}
+                      </span>
+                    </div>
+                    <pre className="text-[10.5px] font-mono bg-background border border-border px-2 py-1.5 rounded-sm text-foreground overflow-x-auto leading-snug whitespace-pre-wrap break-words">
+                      {tc.summary || "(empty)"}
+                    </pre>
+                  </>
+                )}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function StatusIcon({
+  isError,
+  running,
+}: {
+  isError?: boolean;
+  running: boolean;
+}) {
+  if (running) {
+    return (
+      <span className="inline-flex items-center justify-center w-2.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 cp-pulse-ring" />
+      </span>
+    );
+  }
+  if (isError) {
+    return (
+      <span className="text-red-600 dark:text-red-400">
+        <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 10 10" fill="none">
+          <path
+            d="M2.5 2.5l5 5M7.5 2.5l-5 5"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            fill="none"
+            strokeLinecap="round"
+          />
+        </svg>
+      </span>
+    );
+  }
+  return (
+    <span className="text-emerald-600 dark:text-emerald-400">
+      <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 10 10" fill="none">
+        <path
+          d="M2 5.5l2 2 4-5"
+          stroke="currentColor"
+          strokeWidth="1.4"
+          fill="none"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function ThinkingLine() {
+  return (
+    <div className="text-xs text-muted-foreground flex items-center gap-0.5">
+      <span>thinking</span>
+      <span className="cp-dot1">.</span>
+      <span className="cp-dot2">.</span>
+      <span className="cp-dot3">.</span>
+    </div>
+  );
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
 }
