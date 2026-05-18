@@ -70,6 +70,7 @@ export function BlueprintCanvas({
   renameEvent,
   onRenameConsumed,
   reloadKey,
+  onCanvasNodeDelete,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -82,6 +83,11 @@ export function BlueprintCanvas({
    *  Used by the parent after Save or Delete so disk-side changes
    *  reflect on the canvas. */
   reloadKey?: number;
+  /** Called when React Flow's built-in delete gesture fires (Backspace
+   *  or Delete key) — must resolve before the node leaves the canvas
+   *  so the disk-side delete + the visual removal stay consistent.
+   *  Reject the promise to cancel the canvas removal. */
+  onCanvasNodeDelete?: (node: BlueprintNode) => Promise<void>;
 }) {
   return (
     <ReactFlowProvider>
@@ -91,6 +97,7 @@ export function BlueprintCanvas({
         renameEvent={renameEvent}
         onRenameConsumed={onRenameConsumed}
         reloadKey={reloadKey}
+        onCanvasNodeDelete={onCanvasNodeDelete}
       />
     </ReactFlowProvider>
   );
@@ -102,12 +109,14 @@ function CanvasInner({
   renameEvent,
   onRenameConsumed,
   reloadKey,
+  onCanvasNodeDelete,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
   renameEvent?: RenameEvent | null;
   onRenameConsumed?: () => void;
   reloadKey?: number;
+  onCanvasNodeDelete?: (node: BlueprintNode) => Promise<void>;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -194,6 +203,32 @@ function CanvasInner({
   );
   const onPaneClick = useCallback(() => onSelectNode(null), [onSelectNode]);
 
+  // Intercept React Flow's built-in delete gesture (Backspace / Delete
+  // key when a node is selected) so we hit the backend before the node
+  // disappears from the canvas. Returning false from this prop cancels
+  // both the visual removal and React Flow's internal state update; if
+  // the backend delete fails we want the node to stay visible so the
+  // user can see and act on the failure. Edges aren't independently
+  // deletable — they're derived from HCL refs, so deleting one would
+  // just bring it back on next reload. We swallow edge-only deletes.
+  const onBeforeDelete = useCallback(
+    async (params: { nodes: Node[]; edges: Edge[] }) => {
+      const nodesToDelete = params.nodes as BlueprintNode[];
+      if (nodesToDelete.length === 0) return false;
+      if (!onCanvasNodeDelete) return true;
+      try {
+        for (const n of nodesToDelete) {
+          await onCanvasNodeDelete(n);
+        }
+        return true;
+      } catch (e) {
+        setLoadError(`Delete failed: ${(e as Error).message}`);
+        return false;
+      }
+    },
+    [onCanvasNodeDelete],
+  );
+
   // React to rename events from the drawer's Save handler. We update
   // the matching node's `data.name` in place, then ack so the parent
   // can clear its rename slot. The lint rule fires on the setState-in-
@@ -233,6 +268,7 @@ function CanvasInner({
           onDrop={onDrop}
           onNodeClick={onNodeClick}
           onPaneClick={onPaneClick}
+          onBeforeDelete={onBeforeDelete}
           nodeTypes={nodeTypes}
           fitView
           proOptions={{ hideAttribution: true }}

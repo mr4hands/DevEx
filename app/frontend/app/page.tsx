@@ -8,7 +8,7 @@ import { ChatPanel } from "@/components/ChatPanel";
 import { PlanDiff } from "@/components/PlanDiff";
 import { ResourceDrawer } from "@/components/ResourceDrawer";
 import { ResourceList } from "@/components/ResourceList";
-import { fetchPlanDiff } from "@/lib/api";
+import { deleteBlueprintResource, fetchPlanDiff } from "@/lib/api";
 import type { PlanDiffResponse, Resource, ResourceChange } from "@/lib/types";
 
 type MiddleTab = "list" | "plan" | "blueprint";
@@ -32,6 +32,26 @@ export default function Home() {
   // canvas refetches the server-side resources + edges. Phase 3's
   // round-trip flows through this signal.
   const [blueprintReload, setBlueprintReload] = useState(0);
+
+  // Shared "delete a canvas node" handler — the canvas calls it from
+  // React Flow's Backspace/Delete gesture; the drawer's Delete button
+  // shares the same logic. Saved nodes hit the backend; un-saved drops
+  // just clear from the canvas state. Promise resolves on success so
+  // React Flow's `onBeforeDelete` can wait before removing the node
+  // from canvas state.
+  const handleBlueprintDelete = useCallback(
+    async (node: BlueprintNode) => {
+      const hasFile =
+        node.data.attributes !== undefined ||
+        node.id === `${node.data.resourceType}.${node.data.name}`;
+      if (hasFile) {
+        await deleteBlueprintResource(node.data.resourceType, node.data.name);
+      }
+      setBlueprintNode((prev) => (prev && prev.id === node.id ? null : prev));
+      setBlueprintReload((k) => k + 1);
+    },
+    [],
+  );
 
   // Hoisted plan-diff state — shared across PlanDiff, ResourceList
   // (pending indicators), and ResourceDrawer (in-plan strip + change).
@@ -145,6 +165,7 @@ export default function Home() {
             renameEvent={blueprintRename}
             onRenameConsumed={() => setBlueprintRename(null)}
             reloadKey={blueprintReload}
+            onCanvasNodeDelete={handleBlueprintDelete}
           />
         )}
       </section>
