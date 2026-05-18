@@ -1,0 +1,23 @@
+{
+  "name": "import-demo-cdktf-source",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "get": "cdktf get",
+    "build": "tsc",
+    "synth": "cdktf synth",
+    "deploy": "cdktf deploy --auto-approve",
+    "destroy": "cdktf destroy --auto-approve"
+  },
+  "dependencies": {
+    "@cdktf/provider-aws": "^19.0.0",
+    "cdktf": "^0.20.0",
+    "constructs": "^10.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "cdktf-cli": "^0.20.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.0.0"
+  }
+}

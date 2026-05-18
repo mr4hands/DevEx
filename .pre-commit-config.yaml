@@ -38,6 +38,12 @@ repos:
           - --compact
           - --framework
           - terraform
+          # `demo/` holds intentionally minimal teaching artifacts that
+          # mirror production patterns at a tiny scale (e.g.,
+          # `demo/three-tool-import/`). Production modules and root
+          # configs under modules/, live/, bootstrap/ are still scanned.
+          - --skip-path
+          - demo/
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

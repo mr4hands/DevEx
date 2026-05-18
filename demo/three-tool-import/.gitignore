@@ -1,0 +1,14 @@
+source/ids.env
+source/tf/.terraform/
+source/tf/.terraform.lock.hcl
+source/tf/terraform.tfstate*
+source/tg/.terragrunt-cache/
+source/tg/.terraform.lock.hcl
+source/tg/module/.terraform/
+source/tg/module/.terraform.lock.hcl
+source/tg/module/terraform.tfstate*
+source/cdktf/node_modules/
+source/cdktf/cdktf.out/
+source/cdktf/.gen/
+target/.terraform/
+target/terraform.tfvars
