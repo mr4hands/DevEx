@@ -24,10 +24,12 @@ Future phases will add:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
 
+import hcl2
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
@@ -309,6 +311,15 @@ def _render_hcl_value(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
+        # Reference-looking strings (e.g., `aws_vpc.main.id`,
+        # `module.x.y`, `var.region`) and explicit `${...}` expressions
+        # get emitted bare so they're real HCL references rather than
+        # quoted literals. Phase 3's edge derivation depends on this:
+        # `vpc_id = aws_vpc.main.id` produces a parseable interpolation
+        # in the round-trip, which becomes a canvas edge; the literal
+        # string `"aws_vpc.main.id"` wouldn't.
+        if _looks_like_reference(value):
+            return value
         # Heredoc for anything with a literal newline so the file stays
         # readable; otherwise an escaped one-liner.
         if "\n" in value:
@@ -328,6 +339,28 @@ def _render_hcl_value(value: Any) -> str:
     # Fallback: stringify and quote. Loses fidelity but never produces
     # invalid HCL.
     return f'"{str(value)}"'
+
+
+# Reference detection at write-time. Matches `<scope>.<name>(.<attr>)*`
+# where scope is a known HCL prefix (resource type, `module`, `var`,
+# `local`, `data`) or an explicit `${...}` interpolation. Designed to
+# be conservative: rejects strings with spaces, quotes, leading
+# punctuation, etc., so a literal text value isn't mis-emitted as code.
+_REF_PREFIX_RE = re.compile(
+    r"^(?:aws_[a-z][a-z0-9_]*|module|var|local|data)\.[a-zA-Z_][a-zA-Z0-9_]*"
+    r"(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*$"
+)
+
+
+def _looks_like_reference(value: str) -> bool:
+    """True when `value` should be emitted as a bare HCL reference
+    rather than a quoted string literal."""
+    v = value.strip()
+    if not v:
+        return False
+    if v.startswith("${") and v.endswith("}"):
+        return True
+    return bool(_REF_PREFIX_RE.match(v))
 
 
 def _hcl_key(key: str) -> str:
@@ -363,3 +396,242 @@ def _update_layout(
         json.dumps(layout, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/blueprint/resources — read the canvas state back from disk
+# ---------------------------------------------------------------------------
+
+# Matches `${<type>.<name>...}` interpolations inside HCL-stringified
+# references. The lib returns refs to other resources as e.g.
+# `${aws_vpc.main.id}`; this captures the (type, name) pair so we can
+# turn them into edges.
+_REF_RE = re.compile(r"\$\{(aws_[a-zA-Z0-9_]+)\.([a-zA-Z_][a-zA-Z0-9_]*)(?:\.|})")
+
+
+@router.get("/blueprint/resources")
+def list_resources() -> dict[str, Any]:
+    """Reads every `*.tf` file under the blueprint workspace's
+    `resources/` dir + the sidecar `_layout.json` and returns the
+    canvas state.
+
+    Each resource is one node; edges are derived from HCL references
+    found in attribute values (e.g. `vpc_id = aws_vpc.main.id` ties
+    the subnet to the VPC). Resources written by the AI agent through
+    its `Edit`/`Write` tools land in the same dir and flow through
+    this endpoint just like the canvas's own writes.
+    """
+    settings = get_settings()
+    resources_dir = settings.blueprint_root / "resources"
+    layout_path = settings.blueprint_root / "_layout.json"
+
+    if not resources_dir.exists():
+        return {
+            "blueprint_root": str(settings.blueprint_root),
+            "resources": [],
+            "edges": [],
+        }
+
+    layout: dict[str, dict[str, float]] = {}
+    if layout_path.exists():
+        try:
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            # Corrupt layout file shouldn't break the canvas — fall
+            # back to laid-out-at-origin and let the user re-position.
+            layout = {}
+
+    resources: list[dict[str, Any]] = []
+    refs: list[tuple[str, str]] = []  # (source_address, target_address)
+
+    for path in sorted(resources_dir.glob("*.tf")):
+        try:
+            parsed = _parse_resource_file(path)
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            # A malformed file shouldn't take down the whole canvas.
+            # Emit a placeholder node so the user can see + fix it
+            # rather than wondering why the resource vanished.
+            resources.append(
+                {
+                    "type": "",
+                    "name": path.stem,
+                    "attributes": {},
+                    "position": layout.get(path.stem, {"x": 0, "y": 0}),
+                    "parse_error": str(exc),
+                    "filename": path.name,
+                }
+            )
+            continue
+
+        if not parsed:
+            continue
+
+        type_ = parsed["type"]
+        name = parsed["name"]
+        address = f"{type_}.{name}"
+        attrs = parsed["attributes"]
+
+        resources.append(
+            {
+                "type": type_,
+                "name": name,
+                "attributes": attrs,
+                "position": layout.get(address, {"x": 0, "y": 0}),
+                "filename": path.name,
+            }
+        )
+
+        # Walk the attributes looking for ${<type>.<name>...} refs.
+        for ref_target in _find_references(attrs):
+            refs.append((address, ref_target))
+
+    # Edges only count when both endpoints exist as resources on the
+    # canvas — references to things that aren't part of the blueprint
+    # (e.g., a hand-typed `data.aws_caller_identity.current.account_id`)
+    # are ignored.
+    known_addresses = {f"{r['type']}.{r['name']}" for r in resources}
+    edges = [
+        {"source": s, "target": t}
+        for s, t in refs
+        if s in known_addresses and t in known_addresses and s != t
+    ]
+    # Deduplicate; multiple attrs pointing at the same target only
+    # warrants one edge.
+    seen = set()
+    edges = [
+        e for e in edges
+        if (e["source"], e["target"]) not in seen
+        and not seen.add((e["source"], e["target"]))
+    ]
+
+    return {
+        "blueprint_root": str(settings.blueprint_root),
+        "resources": resources,
+        "edges": edges,
+    }
+
+
+def _parse_resource_file(path: Path) -> dict[str, Any] | None:
+    """Parses one `*.tf` file expected to hold exactly one `resource`
+    block (the shape this module writes). Returns
+    `{type, name, attributes}` with HCL quoting stripped, or `None`
+    if the file doesn't actually contain a resource block.
+    """
+    raw = path.read_text(encoding="utf-8")
+    parsed = hcl2.loads(raw)
+    resource_blocks = parsed.get("resource") or []
+    if not resource_blocks:
+        return None
+    block = resource_blocks[0]
+    # Shape: `{ '"aws_s3_bucket"': { '"logs"': { <attrs> } } }`.
+    # python-hcl2 v8 wraps both the type and name keys in literal
+    # quotes; strip them.
+    type_quoted = next(iter(block))
+    type_ = _strip_quotes(type_quoted)
+    inner = block[type_quoted]
+    name_quoted = next(iter(inner))
+    name = _strip_quotes(name_quoted)
+    raw_attrs = inner[name_quoted]
+    # Drop the `__is_block__` sentinel the lib emits.
+    attrs = {k: _normalize_value(v) for k, v in raw_attrs.items() if k != "__is_block__"}
+    return {"type": type_, "name": name, "attributes": attrs}
+
+
+def _strip_quotes(s: str) -> str:
+    """Strip a single layer of surrounding double quotes from a key
+    or string value produced by python-hcl2."""
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1]
+    return s
+
+
+def _normalize_value(v: Any) -> Any:
+    """Recursively strip python-hcl2's literal-quote wrapping on
+    string values, preserving non-string types verbatim.
+
+    Reference interpolations like `${aws_vpc.main.id}` are left
+    intact so callers can find them when building edges; the frontend
+    form displays them as-is too."""
+    if isinstance(v, str):
+        return _strip_quotes(v)
+    if isinstance(v, list):
+        return [_normalize_value(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _normalize_value(val) for k, val in v.items() if k != "__is_block__"}
+    return v
+
+
+def _find_references(attrs: Any) -> list[str]:
+    """Walks the attribute payload looking for `${<type>.<name>...}`
+    interpolations. Returns the set of `<type>.<name>` addresses
+    referenced anywhere in the value tree.
+    """
+    found: list[str] = []
+
+    def walk(v: Any) -> None:
+        if isinstance(v, str):
+            for m in _REF_RE.finditer(v):
+                found.append(f"{m.group(1)}.{m.group(2)}")
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, dict):
+            for val in v.values():
+                walk(val)
+
+    walk(attrs)
+    return found
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/blueprint/resource/{type}/{name}
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/blueprint/resource/{type_}/{name}")
+def delete_resource(type_: str, name: str) -> dict[str, Any]:
+    """Remove a resource from the canvas: deletes its `.tf` file and
+    drops the matching `_layout.json` entry. Idempotent on missing
+    files so a double-click in the UI doesn't 404.
+    """
+    if type_ not in SUPPORTED_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported resource type {type_!r}.",
+        )
+    if not _NAME_RE.match(name):
+        raise HTTPException(
+            status_code=400, detail=f"Invalid resource name {name!r}."
+        )
+
+    settings = get_settings()
+    resources_dir = settings.blueprint_root / "resources"
+    file_path = resources_dir / f"{type_}.{name}.tf"
+    layout_path = settings.blueprint_root / "_layout.json"
+
+    deleted_file = False
+    if file_path.exists():
+        file_path.unlink()
+        deleted_file = True
+
+    deleted_layout = False
+    if layout_path.exists():
+        try:
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            layout = {}
+        address = f"{type_}.{name}"
+        if address in layout:
+            del layout[address]
+            layout_path.write_text(
+                json.dumps(layout, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            deleted_layout = True
+
+    return {
+        "type": type_,
+        "name": name,
+        "deleted_file": deleted_file,
+        "deleted_layout_entry": deleted_layout,
+    }

@@ -1,4 +1,5 @@
 import type {
+  BlueprintResourcesResponse,
   ChatMessage,
   PlanDiffResponse,
   PlanResponse,
@@ -38,6 +39,45 @@ export async function fetchSchemas(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/schemas failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Lists the Blueprint workspace's resources (nodes + dependency edges). */
+export async function fetchBlueprintResources(
+  signal?: AbortSignal,
+): Promise<BlueprintResourcesResponse> {
+  const res = await fetch("/api/blueprint/resources", {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/resources failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Deletes a resource's .tf file + its layout entry. Idempotent. */
+export async function deleteBlueprintResource(
+  type: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{
+  type: string;
+  name: string;
+  deleted_file: boolean;
+  deleted_layout_entry: boolean;
+}> {
+  const res = await fetch(
+    `/api/blueprint/resource/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
+    { method: "DELETE", signal },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `/api/blueprint/resource DELETE failed (${res.status}): ${text}`,
+    );
   }
   return res.json();
 }
