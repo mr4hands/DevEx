@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars after running source/apply-sources.sh,
+# or just `source ../source/ids.env && tofu plan` -- both work since
+# OpenTofu picks up `TF_VAR_*` env vars set by ids.env when sourced.
+#
+# vpc_id            = "vpc-xxxxxxxx"
+# subnet_id         = "subnet-xxxxxxxx"
+# instance_id       = "i-xxxxxxxx"
+# security_group_id = "sg-xxxxxxxx"
+# ami_id            = "ami-xxxxxxxx"
