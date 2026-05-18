@@ -22,6 +22,12 @@ export default function Home() {
   // attribute form; conflating them would force ResourceDrawer to handle
   // both shapes.
   const [blueprintNode, setBlueprintNode] = useState<BlueprintNode | null>(null);
+  // Rename events bubble up from the drawer's Save handler so the
+  // canvas can update the node label without a full re-render dance.
+  // Stored as `{ nodeId, newName }`; the canvas hook consumes it.
+  const [blueprintRename, setBlueprintRename] = useState<
+    { nodeId: string; newName: string } | null
+  >(null);
 
   // Hoisted plan-diff state — shared across PlanDiff, ResourceList
   // (pending indicators), and ResourceDrawer (in-plan strip + change).
@@ -132,6 +138,8 @@ export default function Home() {
           <BlueprintCanvas
             selectedNodeId={blueprintNode?.id ?? null}
             onSelectNode={setBlueprintNode}
+            renameEvent={blueprintRename}
+            onRenameConsumed={() => setBlueprintRename(null)}
           />
         )}
       </section>
@@ -140,6 +148,14 @@ export default function Home() {
           <BlueprintNodeDrawer
             node={blueprintNode}
             onClose={() => setBlueprintNode(null)}
+            onRename={(nodeId, newName) => {
+              setBlueprintRename({ nodeId, newName });
+              setBlueprintNode((prev) =>
+                prev && prev.id === nodeId
+                  ? { ...prev, data: { ...prev.data, name: newName } }
+                  : prev,
+              );
+            }}
           />
         ) : (
           <ResourceDrawer

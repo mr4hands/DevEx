@@ -42,6 +42,29 @@ export async function fetchSchemas(
   return res.json();
 }
 
+/** Saves a resource to the Blueprint workspace as its own .tf file. */
+export async function writeBlueprintResource(
+  body: {
+    type: string;
+    name: string;
+    attributes: Record<string, unknown>;
+    position?: { x: number; y: number } | null;
+  },
+  signal?: AbortSignal,
+): Promise<{ type: string; name: string; path: string; hcl: string }> {
+  const res = await fetch("/api/blueprint/resource", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/resource failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
 /** Streams Server-Sent Events from POST /api/chat. */
 export async function* streamChat(
   messages: ChatMessage[],

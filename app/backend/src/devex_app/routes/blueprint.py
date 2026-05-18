@@ -9,18 +9,27 @@ lives in the workspace pointed at by `settings.blueprint_root`
 This module owns:
 - `GET /api/schemas` — returns the provider schema for the supported
   resource types so the form can render the right fields.
+- `POST /api/blueprint/resource` — writes a single resource block as
+  its own file under `<blueprint_root>/resources/`. Idempotent on
+  `(type, name)` — re-posting overwrites the file. One file per
+  resource so re-reading the canvas state in a future phase is just
+  a directory listing, no HCL parsing required.
 
 Future phases will add:
-- `GET /api/blueprint/graph` — parsed canvas state from the workspace's
-  HCL (nodes + dependency edges).
-- `POST /api/blueprint/resource` — write a new resource block to HCL.
+- `GET /api/blueprint/resources` — canvas state from the resources/
+  directory (file listing + parsed attribute snapshots).
+- `DELETE /api/blueprint/resource/{type}/{name}` — removes a resource.
+- Dependency edge derivation from inter-resource references.
 """
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 
 from ..settings import get_settings
 from ..tofu import TofuError, providers_schema
@@ -170,3 +179,187 @@ def _normalize_block_types(block_types: dict[str, Any]) -> list[dict[str, Any]]:
         )
     out.sort(key=lambda b: b["name"])
     return out
+
+
+# ---------------------------------------------------------------------------
+# POST /api/blueprint/resource — write a resource block to HCL
+# ---------------------------------------------------------------------------
+
+# Valid OpenTofu identifier for resource labels — same rule the parser
+# enforces. Used to reject obviously-malformed input before we go near
+# the filesystem.
+_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+class ResourceWriteRequest(BaseModel):
+    """The body of `POST /api/blueprint/resource`.
+
+    `attributes` are user-supplied values keyed by attribute name. Only
+    primitives (str / int / float / bool) and JSON-serializable lists/maps
+    are supported in Phase 2 — anything fancier than that should round-
+    trip via the future block-types form.
+    """
+
+    type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
+    name: str = Field(..., description="HCL block label, e.g. 'logs'")
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    position: dict[str, float] | None = Field(
+        default=None,
+        description="Optional canvas (x, y) coords. Stored in `_layout.json` "
+        "sidecar so the canvas can restore positions across reloads.",
+    )
+
+    @field_validator("type")
+    @classmethod
+    def _type_supported(cls, v: str) -> str:
+        if v not in SUPPORTED_TYPES:
+            raise ValueError(
+                f"Unsupported resource type {v!r}. "
+                f"Supported: {', '.join(SUPPORTED_TYPES)}"
+            )
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_valid(cls, v: str) -> str:
+        if not _NAME_RE.match(v):
+            raise ValueError(
+                f"Invalid resource name {v!r}. "
+                "Must be a valid OpenTofu identifier "
+                "(start with letter or underscore, then letters/digits/_)."
+            )
+        return v
+
+
+@router.post("/blueprint/resource")
+def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
+    """Writes the resource as its own `.tf` file under the blueprint
+    workspace. One file per resource so we can list/edit/delete without
+    HCL parsing (Phase 3 will need parsing for dependency edges; Phase
+    2 deliberately stays simple).
+
+    Idempotent on `(type, name)`. Posting twice with the same identity
+    overwrites; the file is the source of truth.
+    """
+    settings = get_settings()
+    resources_dir = settings.blueprint_root / "resources"
+    resources_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{req.type}.{req.name}.tf"
+    path = resources_dir / filename
+    hcl = _render_resource_block(req.type, req.name, req.attributes)
+    # Use a temp-write + rename so an interrupted write can't leave a
+    # half-formed `.tf` that `tofu validate` would choke on.
+    tmp = path.with_suffix(".tf.tmp")
+    tmp.write_text(hcl, encoding="utf-8")
+    tmp.replace(path)
+
+    if req.position is not None:
+        _update_layout(settings.blueprint_root, req.type, req.name, req.position)
+
+    return {
+        "type": req.type,
+        "name": req.name,
+        "path": str(path.relative_to(settings.repo_root))
+        if path.is_relative_to(settings.repo_root)
+        else str(path),
+        "hcl": hcl,
+    }
+
+
+def _render_resource_block(
+    type_: str, name: str, attributes: dict[str, Any]
+) -> str:
+    """Build the HCL text for a single resource block.
+
+    Top-level attributes get rendered as `<name> = <value>`. Values are
+    typed: strings get quoted (with escaping), bools/numbers render
+    verbatim, lists/maps are rendered as inline HCL collections. Nested
+    blocks (e.g. `versioning { ... }`) aren't supported in Phase 2 —
+    block-type values are silently skipped here and the form prevents
+    submitting them.
+    """
+    # Skip empty / null values so we don't litter the file with
+    # `argument = null` that the user didn't intend to set.
+    filtered = {k: v for k, v in attributes.items() if v not in (None, "", [])}
+
+    if not filtered:
+        return f'resource "{type_}" "{name}" {{}}\n'
+
+    # Find the widest attribute name so all `=`s align like the formatter
+    # would produce. This keeps the saved file looking like what
+    # `tofu fmt` would emit, so the round-trip isn't noisy.
+    width = max(len(k) for k in filtered)
+
+    lines = [f'resource "{type_}" "{name}" {{']
+    for key, value in sorted(filtered.items()):
+        rendered = _render_hcl_value(value)
+        lines.append(f"  {key.ljust(width)} = {rendered}")
+    lines.append("}\n")
+    return "\n".join(lines)
+
+
+def _render_hcl_value(value: Any) -> str:
+    """Render a Python value into its HCL equivalent. Conservative —
+    falls back to JSON for anything we don't recognize, which produces
+    valid HCL for primitives but not for HCL-specific constructs like
+    references."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        # Heredoc for anything with a literal newline so the file stays
+        # readable; otherwise an escaped one-liner.
+        if "\n" in value:
+            return _heredoc(value)
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    if isinstance(value, list):
+        items = ", ".join(_render_hcl_value(v) for v in value)
+        return f"[{items}]"
+    if isinstance(value, dict):
+        if not value:
+            return "{}"
+        pairs = ", ".join(
+            f"{_hcl_key(k)} = {_render_hcl_value(v)}" for k, v in value.items()
+        )
+        return f"{{ {pairs} }}"
+    # Fallback: stringify and quote. Loses fidelity but never produces
+    # invalid HCL.
+    return f'"{str(value)}"'
+
+
+def _hcl_key(key: str) -> str:
+    """Render a map key. Bare identifier if valid, quoted otherwise."""
+    if _NAME_RE.match(key):
+        return key
+    escaped = key.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _heredoc(value: str) -> str:
+    """Emit a multi-line value as an HCL heredoc."""
+    body = value if value.endswith("\n") else value + "\n"
+    return f"<<EOT\n{body}EOT"
+
+
+def _update_layout(
+    blueprint_root: Path, type_: str, name: str, position: dict[str, float]
+) -> None:
+    """Persist canvas position to a sidecar `_layout.json` so reloading
+    the workspace restores the user's spatial arrangement. The file lives
+    alongside the `resources/` dir so it's easy to spot but doesn't end
+    up parsed by OpenTofu."""
+    import json
+
+    layout_path = blueprint_root / "_layout.json"
+    if layout_path.exists():
+        layout = json.loads(layout_path.read_text(encoding="utf-8"))
+    else:
+        layout = {}
+    layout[f"{type_}.{name}"] = {"x": position.get("x", 0), "y": position.get("y", 0)}
+    layout_path.write_text(
+        json.dumps(layout, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )

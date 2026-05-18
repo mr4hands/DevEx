@@ -4,3 +4,11 @@ terraform.tfstate
 terraform.tfstate.backup
 .terraform/
 .terraform.lock.hcl
+
+# Canvas-generated artifacts: each resource the Blueprint UI saves
+# lives as its own file under `resources/`, and canvas positions are
+# stored in `_layout.json`. These are per-session/experiment, not
+# repo-source; promote a resource to the canonical layout (`main.tf`
+# or a module) when ready and the canvas writes become safe to delete.
+resources/
+_layout.json

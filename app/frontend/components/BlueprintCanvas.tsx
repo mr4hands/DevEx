@@ -14,6 +14,7 @@ import "@xyflow/react/dist/style.css";
 
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -56,18 +57,29 @@ export type BlueprintNodeData = {
 
 export type BlueprintNode = Node<BlueprintNodeData>;
 
+export type RenameEvent = { nodeId: string; newName: string };
+
 export function BlueprintCanvas({
   selectedNodeId,
   onSelectNode,
+  renameEvent,
+  onRenameConsumed,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
+  /** Set by the parent after a successful Save in the drawer. The
+   *  canvas updates the matching node's label and then signals back
+   *  via `onRenameConsumed`. */
+  renameEvent?: RenameEvent | null;
+  onRenameConsumed?: () => void;
 }) {
   return (
     <ReactFlowProvider>
       <CanvasInner
         selectedNodeId={selectedNodeId}
         onSelectNode={onSelectNode}
+        renameEvent={renameEvent}
+        onRenameConsumed={onRenameConsumed}
       />
     </ReactFlowProvider>
   );
@@ -76,9 +88,13 @@ export function BlueprintCanvas({
 function CanvasInner({
   selectedNodeId,
   onSelectNode,
+  renameEvent,
+  onRenameConsumed,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
+  renameEvent?: RenameEvent | null;
+  onRenameConsumed?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
   const [nextNameByType, setNextNameByType] = useState<Record<string, number>>({});
@@ -135,6 +151,22 @@ function CanvasInner({
     [onSelectNode],
   );
   const onPaneClick = useCallback(() => onSelectNode(null), [onSelectNode]);
+
+  // React to rename events from the drawer's Save handler. We update
+  // the matching node's `data.name` in place, then ack so the parent
+  // can clear its rename slot. The lint rule fires on the setState-in-
+  // effect; this is the "consume external event" pattern.
+  useEffect(() => {
+    if (!renameEvent) return;
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.id === renameEvent.nodeId
+          ? { ...n, data: { ...n.data, name: renameEvent.newName } }
+          : n,
+      ),
+    );
+    onRenameConsumed?.();
+  }, [renameEvent, setNodes, onRenameConsumed]);
 
   // Reflect external selection (e.g., parent clears) onto the canvas.
   const nodesWithSelection = useMemo(
