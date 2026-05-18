@@ -53,20 +53,29 @@ class Settings:
         anthropic_model: str,
         repo_root: Path,
         tofu_root: Path,
+        blueprint_root: Path,
     ) -> None:
         self.anthropic_api_key = anthropic_api_key
         self.anthropic_model = anthropic_model
         self.repo_root = repo_root
         self.tofu_root = tofu_root
+        # The Blueprint canvas writes and reads HCL from a dedicated
+        # workspace. Defaults to `live/blueprint/` so the canvas's
+        # output never collides with the deployed dev environment.
+        self.blueprint_root = blueprint_root
 
     @classmethod
     def from_env(cls) -> Settings:
         default_repo_root = Path(__file__).resolve().parents[3].parent
         repo_root = Path(os.environ.get("REPO_ROOT") or default_repo_root).resolve()
         tofu_root = (repo_root / os.environ.get("TOFU_ROOT", "live/dev")).resolve()
+        blueprint_root = (
+            repo_root / os.environ.get("BLUEPRINT_ROOT", "live/blueprint")
+        ).resolve()
         return cls(
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             repo_root=repo_root,
             tofu_root=tofu_root,
+            blueprint_root=blueprint_root,
         )

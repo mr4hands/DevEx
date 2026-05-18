@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   PlanDiffResponse,
   PlanResponse,
+  SchemasResponse,
   StreamEvent,
 } from "./types";
 
@@ -21,6 +22,22 @@ export async function fetchPlanDiff(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/plan-diff failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Returns provider schemas for the Blueprint canvas's supported types. */
+export async function fetchSchemas(
+  types?: string[],
+  signal?: AbortSignal,
+): Promise<SchemasResponse> {
+  const qs = types && types.length > 0
+    ? "?" + types.map((t) => `types=${encodeURIComponent(t)}`).join("&")
+    : "";
+  const res = await fetch(`/api/schemas${qs}`, { cache: "no-store", signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/schemas failed (${res.status}): ${text}`);
   }
   return res.json();
 }

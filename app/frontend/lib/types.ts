@@ -56,6 +56,46 @@ export type PlanDiffResponse = {
   changes: ResourceChange[];
 };
 
+/**
+ * Provider-schema attribute as returned by `/api/schemas`. The `type`
+ * field comes from OpenTofu's normalized provider schema; it may be a
+ * string ("string", "number", "bool") or a nested array
+ * (`["map", "string"]`, `["set", ["object", {...}]]`, etc.) — leave
+ * it as `unknown` and let the form renderer narrow on demand.
+ */
+export type ResourceAttribute = {
+  name: string;
+  type: unknown;
+  description: string;
+  required: boolean;
+  optional: boolean;
+  sensitive: boolean;
+  deprecated: boolean;
+};
+
+export type ResourceBlockType = {
+  name: string;
+  nesting_mode: string;
+  description: string;
+  min_items: number;
+  max_items: number;
+  attribute_count: number;
+  nested_block_count: number;
+};
+
+export type ResourceSchema = {
+  label: string;
+  family: string;
+  attributes: ResourceAttribute[];
+  block_types: ResourceBlockType[];
+};
+
+export type SchemasResponse = {
+  blueprint_root: string;
+  provider: string;
+  resources: Record<string, ResourceSchema>;
+};
+
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
