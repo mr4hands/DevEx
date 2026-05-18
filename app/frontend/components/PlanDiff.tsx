@@ -1,311 +1,560 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
-import { fetchPlanDiff } from "@/lib/api";
+import { expandChanges, fmtValue } from "@/lib/resourceFields";
 import type { ActionKind, PlanDiffResponse, ResourceChange } from "@/lib/types";
 
-const ACTION_META: Record<
-  string,
-  { glyph: string; label: string; className: string }
-> = {
+/**
+ * Pending changes from `tofu plan`, grouped by module (Claude Design
+ * Session 2 Variant B — the visual). Each row is one resource; expanding
+ * a row reveals an inline tree-style diff of changed attributes.
+ *
+ * Presentational only — data + loading state come in as props (owned by
+ * page.tsx so they're shared with ResourceList and ResourceDrawer).
+ *
+ * Action-kind colors and glyphs are kept consistent with `ResourceDrawer`:
+ *   create  → "+"  emerald
+ *   update  → "~"  amber
+ *   delete  → "-"  red
+ *   replace → "±"  red  (with "forces new" badge)
+ *   import  → "←"  sky
+ */
+
+type ActionMeta = {
+  glyph: string;
+  label: string;
+  className: string;
+  rail: string;
+  forcesNew?: boolean;
+};
+
+const ACTION_META: Record<string, ActionMeta> = {
   create: {
     glyph: "+",
     label: "create",
-    className: "text-emerald-600 dark:text-emerald-400",
+    className:
+      "text-emerald-700 bg-emerald-50 ring-emerald-200 dark:text-emerald-300 dark:bg-emerald-950 dark:ring-emerald-900",
+    rail: "bg-emerald-400 dark:bg-emerald-700",
   },
   update: {
     glyph: "~",
     label: "update",
-    className: "text-amber-600 dark:text-amber-400",
+    className:
+      "text-amber-800 bg-amber-50 ring-amber-200 dark:text-amber-300 dark:bg-amber-950 dark:ring-amber-900",
+    rail: "bg-amber-400 dark:bg-amber-700",
   },
   delete: {
     glyph: "-",
     label: "destroy",
-    className: "text-red-600 dark:text-red-400",
+    className:
+      "text-red-700 bg-red-50 ring-red-200 dark:text-red-300 dark:bg-red-950 dark:ring-red-900",
+    rail: "bg-red-400 dark:bg-red-700",
   },
   replace: {
     glyph: "±",
     label: "replace",
-    className: "text-orange-600 dark:text-orange-400",
+    className:
+      "text-red-700 bg-red-50 ring-red-200 dark:text-red-300 dark:bg-red-950 dark:ring-red-900",
+    rail: "bg-red-400 dark:bg-red-700",
+    forcesNew: true,
   },
   import: {
-    glyph: "→",
+    glyph: "←",
     label: "import",
-    className: "text-sky-600 dark:text-sky-400",
+    className:
+      "text-sky-700 bg-sky-50 ring-sky-200 dark:text-sky-300 dark:bg-sky-950 dark:ring-sky-900",
+    rail: "bg-sky-400 dark:bg-sky-700",
   },
   import_update: {
-    glyph: "→~",
+    glyph: "←~",
     label: "import + update",
-    className: "text-sky-600 dark:text-sky-400",
-  },
-  "no-op": {
-    glyph: "·",
-    label: "no-op",
-    className: "text-muted-foreground",
-  },
-  read: {
-    glyph: "?",
-    label: "read",
-    className: "text-muted-foreground",
+    className:
+      "text-sky-700 bg-sky-50 ring-sky-200 dark:text-sky-300 dark:bg-sky-950 dark:ring-sky-900",
+    rail: "bg-sky-400 dark:bg-sky-700",
   },
 };
 
-function metaFor(kind: ActionKind) {
+function metaFor(kind: ActionKind): ActionMeta {
   return (
     ACTION_META[kind] ?? {
       glyph: "?",
       label: kind,
-      className: "text-muted-foreground",
+      className: "text-muted-foreground bg-muted ring-border",
+      rail: "bg-border",
     }
   );
 }
 
-/** Returns the keys whose JSON-serialized values differ between before/after.
- *  Cheap, correct enough for surface-level diff. Sensitive values appear as
- *  `null` in both before/after when masked by the provider; those keys won't
- *  show up unless they genuinely changed. */
-function changedAttrs(
-  before: Record<string, unknown> | null,
-  after: Record<string, unknown> | null,
-): string[] {
-  if (!before && !after) return [];
-  const a = before ?? {};
-  const b = after ?? {};
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  const out: string[] = [];
-  for (const k of keys) {
-    const av = JSON.stringify(a[k] ?? null);
-    const bv = JSON.stringify(b[k] ?? null);
-    if (av !== bv) out.push(k);
-  }
-  return out.sort();
-}
+const ORDERED_KINDS: ActionKind[] = ["import", "create", "update", "replace", "delete"];
 
-export function PlanDiff({ refreshKey }: { refreshKey?: number }) {
-  const [diff, setDiff] = useState<PlanDiffResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+export function PlanDiff({
+  diff,
+  loading,
+  error,
+  onRunPlan,
+  focusAddress,
+}: {
+  diff: PlanDiffResponse | null;
+  loading: boolean;
+  error: string | null;
+  onRunPlan: () => void;
+  /** When set, the matching row auto-expands (used by the drawer's
+   *  "open in PlanDiff" deep-link). */
+  focusAddress?: string | null;
+}) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const abortRef = useRef<AbortController | null>(null);
+  const [collapsedModules, setCollapsedModules] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
-    // Cancel any in-flight request — plan runs are slow, multi-clicks shouldn't
-    // queue them up.
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    setLoading(true);
-    setError(null);
-    try {
-      setDiff(await fetchPlanDiff(ac.signal));
-    } catch (e) {
-      if ((e as Error).name === "AbortError") return;
-      setError((e as Error).message);
-    } finally {
-      if (abortRef.current === ac) {
-        setLoading(false);
-        abortRef.current = null;
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load();
-    return () => abortRef.current?.abort();
-  }, [load, refreshKey]);
-
-  const groups = useMemo(() => {
-    if (!diff) return [] as { kind: string; items: ResourceChange[] }[];
+  const moduleGroups = useMemo(() => {
+    if (!diff) return [] as { module: string; changes: ResourceChange[] }[];
     const buckets = new Map<string, ResourceChange[]>();
-    // Preserve a deterministic visual order — most-impactful first.
-    const order = [
-      "delete",
-      "replace",
-      "create",
-      "update",
-      "import_update",
-      "import",
-      "no-op",
-      "read",
-    ];
     for (const c of diff.changes) {
-      const k = c.action_kind;
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k)!.push(c);
+      const m = c.module || "(root)";
+      if (!buckets.has(m)) buckets.set(m, []);
+      buckets.get(m)!.push(c);
     }
-    return order
-      .map((k) => ({ kind: k, items: buckets.get(k) ?? [] }))
-      .filter((g) => g.items.length > 0)
-      .concat(
-        [...buckets.entries()]
-          .filter(([k]) => !order.includes(k))
-          .map(([k, items]) => ({ kind: k, items })),
-      );
+    return [...buckets.entries()]
+      .map(([module_, changes]) => ({
+        module: module_,
+        changes: [...changes].sort((a, b) => a.address.localeCompare(b.address)),
+      }))
+      .sort((a, b) => a.module.localeCompare(b.module));
   }, [diff]);
 
-  const toggle = (addr: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
+  const toggleRow = useCallback((addr: string) => {
+    setExpanded((p) => {
+      const next = new Set(p);
       if (next.has(addr)) next.delete(addr);
       else next.add(addr);
       return next;
     });
+  }, []);
+
+  const toggleModule = useCallback((m: string) => {
+    setCollapsedModules((p) => {
+      const next = new Set(p);
+      if (next.has(m)) next.delete(m);
+      else next.add(m);
+      return next;
+    });
+  }, []);
+
+  const collapseAll = useCallback(() => {
+    setCollapsedModules(new Set(moduleGroups.map((g) => g.module)));
+  }, [moduleGroups]);
+
+  const expandAll = useCallback(() => setCollapsedModules(new Set()), []);
+  const allCollapsed =
+    collapsedModules.size === moduleGroups.length && moduleGroups.length > 0;
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-4 py-3 border-b border-border flex items-center gap-2">
-        <div className="flex-1">
-          <h2 className="text-sm font-semibold">Plan</h2>
-          <p className="text-xs text-muted-foreground">
-            {loading
-              ? "Running tofu plan…"
-              : diff
-                ? summarize(diff)
-                : "click Run plan to compute"}
-          </p>
+    <div className="flex flex-col h-full min-h-0">
+      {/* Top summary bar */}
+      <div className="flex items-center gap-2 px-3 h-9 border-b border-border bg-muted/50 shrink-0">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">plan</span>
+        <div className="flex items-center gap-1 flex-wrap">
+          {ORDERED_KINDS.map((kind) => {
+            const n = diff?.counts[kind] ?? 0;
+            const meta = metaFor(kind);
+            const muted = n === 0;
+            return (
+              <span
+                key={kind}
+                className={
+                  "inline-flex items-center gap-1 px-1.5 h-[20px] rounded-sm ring-1 ring-inset font-mono text-[11px] " +
+                  (muted ? "text-muted-foreground bg-muted ring-border" : meta.className)
+                }
+              >
+                <span className="font-medium tabular-nums">{n}</span>
+                <span className="font-sans text-[10px] uppercase tracking-wide">
+                  {meta.label}
+                </span>
+              </span>
+            );
+          })}
         </div>
-        <button
-          type="button"
-          className="rounded border border-border bg-muted px-2 py-1 text-xs hover:border-accent disabled:opacity-50"
-          onClick={load}
-          disabled={loading}
-        >
-          {loading ? "…" : "Run plan"}
-        </button>
+        <span className="ml-auto text-[10px] font-mono text-muted-foreground tabular-nums">
+          {diff
+            ? `${diff.visible_changes} change${diff.visible_changes === 1 ? "" : "s"} · ${diff.total_changes - diff.visible_changes} unchanged`
+            : loading
+              ? "running tofu plan…"
+              : "—"}
+        </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      {/* Sub-bar */}
+      <div className="flex items-center justify-between px-3 h-8 border-b border-border text-[11px] shrink-0">
+        <div className="flex items-center gap-2 text-muted-foreground">
+          <span className="font-mono text-foreground tabular-nums">
+            {moduleGroups.length}
+          </span>
+          <span>module{moduleGroups.length === 1 ? "" : "s"}</span>
+          <span className="text-border">·</span>
+          <span className="font-mono text-muted-foreground">grouped</span>
+        </div>
+        <div className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+          <button
+            type="button"
+            className="px-1.5 h-5 rounded-sm transition-colors hover:bg-muted"
+            onClick={allCollapsed ? expandAll : collapseAll}
+            disabled={moduleGroups.length === 0}
+          >
+            {allCollapsed ? "expand all" : "collapse all"}
+          </button>
+          <span className="text-border">·</span>
+          <button
+            type="button"
+            className="px-1.5 h-5 rounded-sm transition-colors hover:bg-muted"
+            onClick={onRunPlan}
+            disabled={loading}
+          >
+            {loading ? "…" : "run plan"}
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto min-h-0">
         {error && (
-          <div className="m-4 text-xs rounded border border-red-200 dark:border-red-900 px-3 py-2 text-red-600 dark:text-red-400 whitespace-pre-wrap font-mono">
+          <div className="m-3 text-xs rounded-sm border border-red-200 dark:border-red-900 px-3 py-2 text-red-600 dark:text-red-400 whitespace-pre-wrap font-mono">
             {error}
           </div>
         )}
         {!error && !loading && diff && diff.visible_changes === 0 && (
-          <p className="m-4 text-sm text-muted-foreground">
+          <p className="m-3 text-xs text-muted-foreground">
             No pending changes. The current state matches the configured HCL.
           </p>
         )}
-        {!error && groups.map((g) => {
-          const meta = metaFor(g.kind);
-          return (
-            <section key={g.kind}>
-              <header className="sticky top-0 bg-background/95 backdrop-blur px-4 py-1.5 text-[11px] font-mono uppercase tracking-wide border-b border-border flex items-center gap-2">
-                <span className={`font-semibold ${meta.className}`}>
-                  {meta.glyph}
-                </span>
-                <span className="text-muted-foreground">
-                  {meta.label} · {g.items.length}
-                </span>
-              </header>
-              <ul>
-                {g.items.map((c) => {
-                  const isOpen = expanded.has(c.address);
-                  const changed = changedAttrs(c.before, c.after);
-                  return (
-                    <li key={c.address}>
-                      <button
-                        type="button"
-                        onClick={() => toggle(c.address)}
-                        className="w-full text-left px-4 py-2 text-sm border-b border-border hover:bg-muted transition-colors"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={`font-mono text-xs ${meta.className}`}>
-                            {meta.glyph}
-                          </span>
-                          <span className="font-mono text-xs truncate flex-1">
-                            {c.address}
-                          </span>
-                        </div>
-                        <div className="ml-5 text-[11px] text-muted-foreground truncate">
-                          {c.importing_id && (
-                            <>
-                              id=<span className="font-mono">{c.importing_id}</span>
-                              {changed.length > 0 && " · "}
-                            </>
-                          )}
-                          {changed.length > 0 && (
-                            <>
-                              {changed.length} attr
-                              {changed.length === 1 ? "" : "s"} change
-                              {changed.length === 1 ? "s" : ""}
-                            </>
-                          )}
-                        </div>
-                      </button>
-                      {isOpen && <DiffBody change={c} changed={changed} />}
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })}
+        {!error &&
+          moduleGroups.map((g) => (
+            <ModuleSection
+              key={g.module}
+              moduleName={g.module}
+              changes={g.changes}
+              collapsed={collapsedModules.has(g.module)}
+              expanded={expanded}
+              focusAddress={focusAddress}
+              onToggleModule={() => toggleModule(g.module)}
+              onToggleRow={toggleRow}
+            />
+          ))}
       </div>
     </div>
   );
 }
 
-function summarize(diff: PlanDiffResponse): string {
-  const ordered = ["create", "update", "delete", "replace", "import", "import_update"];
-  const parts: string[] = [];
-  for (const k of ordered) {
-    const n = diff.counts[k] ?? 0;
-    if (n > 0) parts.push(`${n} ${metaFor(k).label}`);
-  }
-  return parts.length > 0 ? parts.join(", ") : "no changes";
-}
-
-function DiffBody({
-  change,
-  changed,
+function ModuleSection({
+  moduleName,
+  changes,
+  collapsed,
+  expanded,
+  focusAddress,
+  onToggleModule,
+  onToggleRow,
 }: {
-  change: ResourceChange;
-  changed: string[];
+  moduleName: string;
+  changes: ResourceChange[];
+  collapsed: boolean;
+  expanded: Set<string>;
+  focusAddress?: string | null;
+  onToggleModule: () => void;
+  onToggleRow: (addr: string) => void;
 }) {
+  const totals = useMemo(() => {
+    const t: Partial<Record<string, number>> = {};
+    for (const c of changes) {
+      t[c.action_kind] = (t[c.action_kind] ?? 0) + 1;
+    }
+    return t;
+  }, [changes]);
+
   return (
-    <div className="px-4 py-2 bg-muted/40 border-b border-border text-xs space-y-1">
-      {changed.length === 0 ? (
-        <div className="text-muted-foreground italic">
-          {change.action_kind === "import"
-            ? "Pure import. No attribute changes."
-            : "No attribute changes detected at this level."}
+    <div className="border-b border-border last:border-b-0">
+      <header
+        className="sticky top-0 z-10 flex items-center gap-2 px-3 h-7 bg-muted border-b border-border cursor-pointer select-none"
+        onClick={onToggleModule}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="9"
+          height="9"
+          viewBox="0 0 10 10"
+          fill="none"
+          className={`text-muted-foreground transition-transform ${collapsed ? "" : "rotate-90"}`}
+        >
+          <path
+            d="M3 2l4 3-4 3"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="font-mono text-[11px] text-foreground">{moduleName}</span>
+        <span className="text-[10px] font-mono text-muted-foreground tabular-nums">
+          {changes.length}
+        </span>
+        <div className="ml-auto flex items-center gap-1">
+          {Object.entries(totals).map(([kind, n]) => {
+            const meta = metaFor(kind);
+            return (
+              <span
+                key={kind}
+                className={`inline-flex items-center gap-0.5 px-1 h-[16px] rounded-sm ring-1 ring-inset font-mono text-[10px] ${meta.className}`}
+              >
+                <span>{meta.glyph}</span>
+                <span className="tabular-nums">{n}</span>
+              </span>
+            );
+          })}
         </div>
-      ) : (
-        <table className="w-full font-mono">
-          <tbody>
-            {changed.map((k) => (
-              <tr key={k}>
-                <td className="py-0.5 pr-3 text-muted-foreground align-top whitespace-nowrap">
-                  {k}
-                </td>
-                <td className="py-0.5 break-all">
-                  <div className="text-red-600 dark:text-red-400">
-                    {fmtValue(change.before?.[k])}
-                  </div>
-                  <div className="text-emerald-600 dark:text-emerald-400">
-                    {fmtValue(change.after?.[k])}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      </header>
+
+      {!collapsed && (
+        <div>
+          {changes.map((c) => (
+            <ChangeRow
+              key={c.address}
+              change={c}
+              expanded={expanded.has(c.address) || focusAddress === c.address}
+              onToggle={() => onToggleRow(c.address)}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function fmtValue(v: unknown): string {
-  if (v === undefined) return "(unset)";
-  if (v === null) return "null";
-  if (typeof v === "string") return v.length > 200 ? v.slice(0, 200) + "…" : v;
-  try {
-    const s = JSON.stringify(v);
-    return s.length > 200 ? s.slice(0, 200) + "…" : s;
-  } catch {
-    return String(v);
+function ChangeRow({
+  change,
+  expanded,
+  onToggle,
+}: {
+  change: ResourceChange;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const meta = metaFor(change.action_kind);
+  const leafChanges = useMemo(
+    () => expandChanges(change.before, change.after),
+    [change],
+  );
+  const attrCounts = useMemo(() => countAttrChanges(change), [change]);
+
+  const inner = change.module
+    ? change.address.slice(change.module.length + 1)
+    : change.address;
+  const lastDot = inner.lastIndexOf(".");
+  const typeText = lastDot >= 0 ? inner.slice(0, lastDot + 1) : "";
+  const nameText = lastDot >= 0 ? inner.slice(lastDot + 1) : inner;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`w-full flex items-center gap-2 pl-3 pr-3 h-8 text-left cursor-pointer transition-colors relative ${
+          expanded ? "bg-muted/40" : "hover:bg-muted/50"
+        }`}
+      >
+        <span className={`absolute left-0 top-0 bottom-0 w-[2px] ${meta.rail}`} />
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="9"
+          height="9"
+          viewBox="0 0 10 10"
+          fill="none"
+          className={`text-muted-foreground ml-1 transition-transform ${expanded ? "rotate-90" : ""}`}
+        >
+          <path
+            d="M3 2l4 3-4 3"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span
+          className={`inline-flex items-center justify-center w-4 h-4 font-mono text-[11px] font-medium ${actionGlyphTextColor(change.action_kind)}`}
+        >
+          {meta.glyph}
+        </span>
+        <span
+          className="font-mono text-xs text-foreground truncate min-w-0 flex-1"
+          title={change.address}
+        >
+          <span className="text-muted-foreground">{typeText}</span>
+          <span className="font-medium">{nameText}</span>
+        </span>
+
+        {meta.forcesNew && (
+          <span className="text-[10px] font-mono px-1.5 h-[16px] inline-flex items-center rounded-sm ring-1 ring-inset ring-red-200 bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300 dark:ring-red-900">
+            forces new
+          </span>
+        )}
+        <span className="inline-flex items-center gap-1 font-mono text-[10px]">
+          {attrCounts.added > 0 && (
+            <AttrPill kind="create" glyph="+" n={attrCounts.added} />
+          )}
+          {attrCounts.changed > 0 && (
+            <AttrPill kind="update" glyph="~" n={attrCounts.changed} />
+          )}
+          {attrCounts.removed > 0 && (
+            <AttrPill kind="delete" glyph="-" n={attrCounts.removed} />
+          )}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="px-10 py-2 bg-muted/30 border-t border-border">
+          {leafChanges.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground italic">
+              {change.action_kind === "import"
+                ? "Pure import. No attribute changes."
+                : "No leaf-level attribute changes detected."}
+            </p>
+          ) : (
+            <TreeDiff leafChanges={leafChanges} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AttrPill({
+  kind,
+  glyph,
+  n,
+}: {
+  kind: ActionKind;
+  glyph: string;
+  n: number;
+}) {
+  const meta = metaFor(kind);
+  return (
+    <span
+      className={`inline-flex items-center gap-0.5 px-1 h-[16px] rounded-sm ring-1 ring-inset ${meta.className}`}
+    >
+      <span>{glyph}</span>
+      <span className="tabular-nums">{n}</span>
+    </span>
+  );
+}
+
+function actionGlyphTextColor(kind: ActionKind): string {
+  switch (kind) {
+    case "create":
+      return "text-emerald-700 dark:text-emerald-400";
+    case "update":
+      return "text-amber-700 dark:text-amber-400";
+    case "delete":
+    case "replace":
+      return "text-red-600 dark:text-red-400";
+    case "import":
+    case "import_update":
+      return "text-sky-700 dark:text-sky-400";
+    default:
+      return "text-muted-foreground";
   }
+}
+
+function countAttrChanges(c: ResourceChange): {
+  added: number;
+  removed: number;
+  changed: number;
+} {
+  const before = (c.before ?? {}) as Record<string, unknown>;
+  const after = (c.after ?? {}) as Record<string, unknown>;
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const k of keys) {
+    const hasB = k in before && before[k] !== null;
+    const hasA = k in after && after[k] !== null;
+    if (!hasB && hasA) added++;
+    else if (hasB && !hasA) removed++;
+    else if (JSON.stringify(before[k]) !== JSON.stringify(after[k])) changed++;
+  }
+  return { added, removed, changed };
+}
+
+function TreeDiff({
+  leafChanges,
+}: {
+  leafChanges: ReturnType<typeof expandChanges>;
+}) {
+  const grouped = useMemo(() => {
+    const byTop = new Map<string, typeof leafChanges>();
+    for (const c of leafChanges) {
+      const dot = c.path.indexOf(".");
+      const top = dot >= 0 ? c.path.slice(0, dot) : c.path;
+      if (!byTop.has(top)) byTop.set(top, [] as typeof leafChanges);
+      byTop.get(top)!.push(c);
+    }
+    return [...byTop.entries()];
+  }, [leafChanges]);
+
+  return (
+    <>
+      {grouped.map(([top, items]) => {
+        const isNested = items.some((c) => c.path.includes("."));
+        if (!isNested) {
+          const c = items[0]!;
+          return (
+            <div key={top} className="mb-2 last:mb-0 font-mono text-[11px]">
+              <div className="flex items-center gap-1 text-muted-foreground flex-wrap">
+                <span className="text-amber-700 dark:text-amber-400">~</span>
+                <span className="text-foreground">{top}</span>
+                <span className="text-muted-foreground">=</span>
+                <DiffSpan before={c.before} after={c.after} />
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div key={top} className="mb-2 last:mb-0 font-mono text-[11px]">
+            <div className="flex items-center gap-1 text-muted-foreground">
+              <span className="text-amber-700 dark:text-amber-400">~</span>
+              <span className="text-foreground">{top}</span>
+              <span className="text-muted-foreground">= {"{"}</span>
+            </div>
+            <div className="pl-4 border-l border-border ml-[5px] space-y-0.5">
+              {items.map((c) => {
+                const tail = c.path.slice(top.length + 1);
+                return (
+                  <div key={c.path} className="flex items-center gap-1 flex-wrap">
+                    <span className="text-amber-700 dark:text-amber-400">~</span>
+                    <span className="text-foreground">{tail}</span>
+                    <span className="text-muted-foreground">=</span>
+                    <DiffSpan before={c.before} after={c.after} />
+                  </div>
+                );
+              })}
+            </div>
+            <div className="text-muted-foreground">{"}"}</div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function DiffSpan({ before, after }: { before: unknown; after: unknown }) {
+  return (
+    <span className="inline-flex items-center min-w-0">
+      <span className="bg-red-50 dark:bg-red-950/40 text-red-900 dark:text-red-200 px-1 py-0.5 border-l-2 border-red-300 dark:border-red-800 truncate max-w-[18ch]">
+        {fmtValue(before)}
+      </span>
+      <span className="text-muted-foreground mx-1">→</span>
+      <span className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 px-1 py-0.5 border-l-2 border-emerald-400 dark:border-emerald-800 truncate max-w-[18ch]">
+        {fmtValue(after)}
+      </span>
+    </span>
+  );
 }

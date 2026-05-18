@@ -35,18 +35,15 @@ export function ResourceDrawer({
   resource,
   change,
   onClose,
-  onAskChat,
   onOpenInPlanDiff,
 }: {
   resource: Resource | null;
-  /** Optional pending change for this resource. Currently not wired
-   *  from the parent — Session 5 (Cross-pane integration) will fetch
-   *  plan-diff and pass the matching change here. */
+  /** Pending change for this resource, indexed by address by the parent
+   *  from `/api/plan-diff`. Null when there's nothing pending or no
+   *  plan has been run. */
   change?: ChangeSummary | null;
   onClose: () => void;
-  /** Optional: seed the chat with a prompt about this resource. */
-  onAskChat?: (resource: Resource) => void;
-  /** Optional: switch the middle pane to the Plan tab + scroll/highlight. */
+  /** Switch the middle pane to the Plan tab + auto-expand the row. */
   onOpenInPlanDiff?: (resource: Resource) => void;
 }) {
   if (!resource) return <EmptyDrawer />;
@@ -56,7 +53,6 @@ export function ResourceDrawer({
       resource={resource}
       change={change ?? null}
       onClose={onClose}
-      onAskChat={onAskChat}
       onOpenInPlanDiff={onOpenInPlanDiff}
     />
   );
@@ -79,13 +75,11 @@ function DrawerBody({
   resource,
   change,
   onClose,
-  onAskChat,
   onOpenInPlanDiff,
 }: {
   resource: Resource;
   change: ChangeSummary | null;
   onClose: () => void;
-  onAskChat?: (r: Resource) => void;
   onOpenInPlanDiff?: (r: Resource) => void;
 }) {
   const leafChanges = useMemo(
@@ -188,18 +182,27 @@ function DrawerBody({
           </button>
         </div>
 
-        {/* Change summary strip */}
+        {/* In-plan strip — clickable, deep-links to the Plan tab */}
         {change && leafChanges.length > 0 && (
-          <div className="flex items-center gap-2 px-3 h-6 bg-amber-50 dark:bg-amber-950/40 border-t border-b border-amber-200 dark:border-amber-900">
-            <span className="h-1.5 w-1.5 bg-amber-500 rounded-full" />
+          <button
+            type="button"
+            onClick={() => onOpenInPlanDiff?.(resource)}
+            disabled={!onOpenInPlanDiff}
+            className="w-full flex items-center gap-2 px-3 h-6 bg-amber-50 dark:bg-amber-950/40 border-t border-b border-amber-200 dark:border-amber-900 text-left hover:bg-amber-100/60 dark:hover:bg-amber-900/40 transition-colors disabled:cursor-default disabled:hover:bg-amber-50 dark:disabled:hover:bg-amber-950/40"
+          >
+            <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-amber-500 text-white text-[9px] font-mono leading-none">
+              {leafChanges.length}
+            </span>
             <span className="text-[11px] text-amber-900 dark:text-amber-200">
-              {leafChanges.length} attribute
+              in plan · {leafChanges.length} attribute
               {leafChanges.length === 1 ? "" : "s"} changing
             </span>
-            <span className="text-[10px] text-amber-700/80 dark:text-amber-300/80 ml-auto font-mono truncate">
-              {actionChip?.glyph ?? "~"} {leafChanges[0]?.path ?? ""}
-            </span>
-          </div>
+            {onOpenInPlanDiff && (
+              <span className="text-[10px] text-amber-700/80 dark:text-amber-300/80 ml-auto font-mono">
+                open in PlanDiff →
+              </span>
+            )}
+          </button>
         )}
       </div>
 
@@ -295,37 +298,14 @@ function DrawerBody({
         </CollapsibleSection>
       </div>
 
-      {/* Footer */}
-      <div className="shrink-0 border-t border-border px-3 py-2.5 bg-muted/50 flex gap-2">
-        <button
-          type="button"
-          onClick={() => onAskChat?.(resource)}
-          disabled={!onAskChat}
-          className="flex-1 inline-flex items-center justify-center gap-2 h-8 px-3 bg-accent hover:opacity-90 text-white text-xs font-medium rounded-sm transition-colors disabled:opacity-50"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="11"
-            height="11"
-            viewBox="0 0 12 12"
-            fill="none"
-          >
-            <path
-              d="M2 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H6l-2.5 2V8H3a1 1 0 0 1-1-1V3z"
-              stroke="currentColor"
-              strokeWidth="1.1"
-              fill="none"
-            />
-          </svg>
-          Ask chat about this resource
-        </button>
-        <button
-          type="button"
-          onClick={() => toggle("rest")}
-          className="inline-flex items-center justify-center h-8 px-3 border border-border hover:bg-muted text-xs text-foreground rounded-sm transition-colors font-mono"
-        >
-          {"{}"} raw
-        </button>
+      {/* Ambient-context footer hint */}
+      <div className="shrink-0 border-t border-border px-3 py-2.5 bg-muted/50">
+        <div className="flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
+          <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-amber-500 text-white text-[9px] leading-none">
+            1
+          </span>
+          <span>this resource is the chat&apos;s current context</span>
+        </div>
       </div>
     </div>
   );

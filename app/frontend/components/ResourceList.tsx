@@ -22,10 +22,15 @@ export function ResourceList({
   selected,
   onSelect,
   refreshKey,
+  pendingByAddress,
 }: {
   selected: Resource | null;
   onSelect: (r: Resource) => void;
   refreshKey?: number;
+  /** Map of resource address → action_kind for resources that have a
+   *  pending change. Used to surface per-row dot indicators + group
+   *  pending pills. */
+  pendingByAddress?: Map<string, string>;
 }) {
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +131,14 @@ export function ResourceList({
             {loading ? "…" : visibleCount === totalCount ? totalCount : `${visibleCount}/${totalCount}`}
           </span>
           <span>resources</span>
+          {pendingByAddress && pendingByAddress.size > 0 && (
+            <>
+              <span className="text-border">·</span>
+              <span className="font-mono text-muted-foreground">
+                {pendingByAddress.size} pending
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
           <button
@@ -200,6 +213,7 @@ export function ResourceList({
             selected={selected}
             onToggle={() => toggleGroup(g.key)}
             onSelect={onSelect}
+            pendingByAddress={pendingByAddress}
           />
         ))}
       </div>
@@ -216,15 +230,21 @@ function GroupSection({
   selected,
   onToggle,
   onSelect,
+  pendingByAddress,
 }: {
   group: Group;
   collapsed: boolean;
   selected: Resource | null;
   onToggle: () => void;
   onSelect: (r: Resource) => void;
+  pendingByAddress?: Map<string, string>;
 }) {
   const meta = familyOf(group.type);
   const classes = FAMILY_CLASSES[meta.family];
+  // Per-group pending count for the header pill.
+  const pendingCount = pendingByAddress
+    ? group.resources.filter((r) => pendingByAddress.has(r.address)).length
+    : 0;
 
   return (
     <section>
@@ -268,6 +288,12 @@ function GroupSection({
           </>
         )}
         <span className="ml-auto flex items-center gap-2">
+          {pendingCount > 0 && (
+            <span className="inline-flex items-center gap-1 text-[10px] font-mono text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 ring-1 ring-inset ring-amber-200 dark:ring-amber-900 px-1.5 h-[18px] rounded-sm">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              {pendingCount}
+            </span>
+          )}
           <span className="text-[10px] font-mono text-muted-foreground tabular-nums">
             {group.resources.length}
           </span>
@@ -287,6 +313,7 @@ function GroupSection({
               selected={selected?.address === r.address}
               railClass={classes.rail}
               onSelect={onSelect}
+              pendingKind={pendingByAddress?.get(r.address)}
             />
           ))}
         </ul>
@@ -300,13 +327,16 @@ function ResourceRow({
   selected,
   railClass,
   onSelect,
+  pendingKind,
 }: {
   resource: Resource;
   selected: boolean;
   railClass: string;
   onSelect: (r: Resource) => void;
+  pendingKind?: string;
 }) {
   const leaf = leafOf(resource.address);
+  const pending = pendingKind ? pendingMeta(pendingKind) : null;
 
   if (selected) {
     return (
@@ -319,6 +349,7 @@ function ResourceRow({
             <span className="font-mono text-xs text-amber-900 dark:text-amber-200 font-medium">
               {leaf}
             </span>
+            {pending && <PendingBadge meta={pending} />}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <span
@@ -348,8 +379,39 @@ function ResourceRow({
         >
           {leaf}
         </span>
+        {pending && <PendingBadge meta={pending} />}
       </button>
     </li>
+  );
+}
+
+type PendingMeta = { dotClass: string; label: string };
+
+function pendingMeta(kind: string): PendingMeta {
+  switch (kind) {
+    case "create":
+      return { dotClass: "bg-emerald-500", label: "create" };
+    case "update":
+      return { dotClass: "bg-amber-500", label: "update" };
+    case "delete":
+      return { dotClass: "bg-red-500", label: "destroy" };
+    case "replace":
+      return { dotClass: "bg-red-500", label: "replace" };
+    case "import":
+      return { dotClass: "bg-sky-500", label: "import" };
+    case "import_update":
+      return { dotClass: "bg-sky-500", label: "import + update" };
+    default:
+      return { dotClass: "bg-muted-foreground", label: kind };
+  }
+}
+
+function PendingBadge({ meta }: { meta: PendingMeta }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-mono text-muted-foreground shrink-0">
+      <span className={`w-1.5 h-1.5 rounded-full ${meta.dotClass}`} />
+      <span className="uppercase tracking-wide">{meta.label}</span>
+    </span>
   );
 }
 

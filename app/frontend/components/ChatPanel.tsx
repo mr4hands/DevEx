@@ -3,25 +3,36 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { streamChat } from "@/lib/api";
+import { FAMILY_CLASSES, familyOf, leafOf } from "@/lib/resourceFamilies";
 import { metaFor } from "@/lib/toolLabels";
-import type { ChatMessage, ToolCall } from "@/lib/types";
+import type { ChatMessage, Resource, ToolCall } from "@/lib/types";
 
 /**
  * Chat panel rendering the agent's turn as an Activity Card (Claude Design
- * Session 3, Variant A). Each assistant turn is one bordered card:
+ * Session 3, Variant A) plus ambient context (Session 5, Variant A).
  *
- *   - Active state (still running): amber header with a pulsing dot +
+ *   - Selected resource auto-attaches as the chat's context. The chip
+ *     above the composer shows what's attached; clear with the × or
+ *     ⌘⇧X / Ctrl+Shift+X.
+ *   - Active turn state: amber header with a pulsing dot +
  *     "Reading X..." verb-target line.
- *   - Completed state: stone header that's a collapsible button + a
- *     stack of tool rows. Each row is click-to-expand to reveal its
- *     input + output inline.
+ *   - Completed turn state: stone header that's a collapsible button +
+ *     stack of tool rows. Each row is click-to-expand for input/result.
  *
- * The visible message text follows the card.
+ * Context is prepended to outgoing user messages so the backend (which
+ * doesn't yet know about context) sees a single coherent prompt.
  */
 export function ChatPanel({
   onToolResult,
+  contextResource,
+  onClearContext,
 }: {
   onToolResult?: () => void;
+  /** Resource currently selected in the middle pane; auto-attaches as
+   *  context for every message sent. Null disables the chip. */
+  contextResource?: Resource | null;
+  /** Clears the context — wired to ResourceList's selection setter. */
+  onClearContext?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -35,10 +46,25 @@ export function ChatPanel({
     const trimmed = input.trim();
     if (!trimmed || busy) return;
 
-    const userMsg: ChatMessage = { role: "user", content: trimmed };
+    // The user sees their original message in the transcript; the
+    // backend gets the context prepended as a [Context: …] line. The
+    // backend currently has no context-aware field, so prepending is
+    // the lightest-touch way to make the chat agent aware of what the
+    // user is looking at.
+    const visibleContent = trimmed;
+    const sentContent = contextResource
+      ? `[Context: ${contextResource.address} (${contextResource.type})]\n\n${trimmed}`
+      : trimmed;
+    const userMsgVisible: ChatMessage = { role: "user", content: visibleContent };
+    const userMsgSent: ChatMessage = { role: "user", content: sentContent };
     const next: ChatMessage[] = [
       ...messages,
-      userMsg,
+      userMsgVisible,
+      { role: "assistant", content: "" },
+    ];
+    const nextSent: ChatMessage[] = [
+      ...messages,
+      userMsgSent,
       { role: "assistant", content: "" },
     ];
     setMessages(next);
@@ -50,7 +76,7 @@ export function ChatPanel({
     abortRef.current = controller;
 
     try {
-      const history = next.slice(0, -1);
+      const history = nextSent.slice(0, -1);
       const stream = streamChat(history, controller.signal);
       let assistantText = "";
       const toolCalls: ToolCall[] = [];
@@ -113,7 +139,7 @@ export function ChatPanel({
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
       });
     }
-  }, [busy, input, messages, onToolResult]);
+  }, [busy, input, messages, onToolResult, contextResource]);
 
   const cancel = useCallback(() => {
     abortRef.current?.abort();
@@ -123,6 +149,23 @@ export function ChatPanel({
     // Auto-scroll to bottom on new content.
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
+
+  // ⌘⇧X / Ctrl+Shift+X clears the ambient context.
+  useEffect(() => {
+    if (!onClearContext) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (
+        e.shiftKey &&
+        (e.metaKey || e.ctrlKey) &&
+        (e.key === "x" || e.key === "X")
+      ) {
+        e.preventDefault();
+        onClearContext();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClearContext]);
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-background">
@@ -170,8 +213,14 @@ export function ChatPanel({
         )}
       </div>
 
-      {/* Composer */}
+      {/* Composer area — context chip above, textarea below */}
       <div className="shrink-0 border-t border-border p-2 bg-muted/40">
+        {contextResource && (
+          <ContextChip
+            resource={contextResource}
+            onClear={onClearContext}
+          />
+        )}
         <form
           className="border border-border bg-background rounded-sm px-2 py-1.5 flex items-end gap-1.5"
           onSubmit={(e) => {
@@ -183,7 +232,13 @@ export function ChatPanel({
             ref={textareaRef}
             rows={2}
             className="flex-1 text-xs resize-none outline-none bg-transparent placeholder:text-muted-foreground/70"
-            placeholder={busy ? "thinking…" : "ask about the plan"}
+            placeholder={
+              busy
+                ? "thinking…"
+                : contextResource
+                  ? "ask anything — selected resource is attached…"
+                  : "ask about the plan"
+            }
             value={input}
             disabled={busy}
             onChange={(e) => setInput(e.target.value)}
@@ -212,6 +267,11 @@ export function ChatPanel({
             </button>
           )}
         </form>
+        {contextResource && (
+          <div className="mt-1.5 text-[10px] font-mono text-muted-foreground">
+            context auto-attaches · clear with ⌘⇧X
+          </div>
+        )}
       </div>
     </div>
   );
@@ -533,4 +593,60 @@ function ThinkingLine() {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s;
   return s.slice(0, max - 1) + "…";
+}
+
+/**
+ * Ambient context chip rendered above the textarea. Shows the family
+ * monogram + leaf name of the resource the user has selected; an ×
+ * button (or ⌘⇧X) clears it.
+ */
+function ContextChip({
+  resource,
+  onClear,
+}: {
+  resource: Resource;
+  onClear?: () => void;
+}) {
+  const meta = familyOf(resource.type);
+  const classes = FAMILY_CLASSES[meta.family];
+  const leaf = leafOf(resource.address);
+  return (
+    <div className="flex items-center gap-1.5 mb-2 px-2 h-7 bg-background border border-amber-300 dark:border-amber-700 rounded-sm">
+      <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-amber-500 text-white text-[9px] font-mono leading-none">
+        1
+      </span>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        context
+      </span>
+      <span
+        className={`inline-flex items-center justify-center px-1 h-[16px] min-w-[22px] rounded-sm ring-1 ring-inset font-mono text-[10px] uppercase ${classes.chip}`}
+      >
+        {meta.monogram}
+      </span>
+      <span
+        className="font-mono text-[11px] text-foreground truncate min-w-0 flex-1"
+        title={resource.address}
+      >
+        {leaf}
+      </span>
+      {onClear && (
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="Clear context"
+          title="Clear context (⌘⇧X)"
+          className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-muted-foreground hover:text-foreground rounded-sm"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M2.5 2.5l7 7M9.5 2.5l-7 7"
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
 }
