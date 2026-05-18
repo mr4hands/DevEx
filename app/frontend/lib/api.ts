@@ -1,10 +1,26 @@
-import type { ChatMessage, PlanResponse, StreamEvent } from "./types";
+import type {
+  ChatMessage,
+  PlanDiffResponse,
+  PlanResponse,
+  StreamEvent,
+} from "./types";
 
 export async function fetchPlan(): Promise<PlanResponse> {
   const res = await fetch("/api/plan", { cache: "no-store" });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/plan failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+export async function fetchPlanDiff(
+  signal?: AbortSignal,
+): Promise<PlanDiffResponse> {
+  const res = await fetch("/api/plan-diff", { cache: "no-store", signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/plan-diff failed (${res.status}): ${text}`);
   }
   return res.json();
 }
