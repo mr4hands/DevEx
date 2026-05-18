@@ -1,0 +1,9 @@
+node_modules/
+cdktf.out/
+.gen/
+*.tfstate
+*.tfstate.backup
+terraform.*.tfstate
+terraform.tfstate.d/
+.terraform/
+.terraform.lock.hcl

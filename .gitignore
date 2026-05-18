@@ -46,3 +46,6 @@ tsconfig.tsbuildinfo
 .venv/
 __pycache__/
 *.pyc
+
+# Claude Design session exports (HTML drops from claude.ai/design)
+app/frontend/.design-handoff/
