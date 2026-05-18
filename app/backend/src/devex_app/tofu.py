@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,3 +89,112 @@ def resources_from_state(state: dict[str, Any]) -> list[Resource]:
     if not root:
         return []
     return _walk_state_module(root, "")
+
+
+# ---------------------------------------------------------------------------
+# Plan-diff support
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ResourceChange:
+    """A single planned change. Mirrors the `resource_changes[]` entries in
+    `tofu show -json <planfile>` output."""
+
+    address: str
+    type: str
+    name: str
+    module: str
+    provider: str
+    mode: str
+    actions: list[str]            # e.g. ["create"], ["update"], ["delete", "create"]
+    before: dict[str, Any] | None  # null on create
+    after: dict[str, Any] | None   # null on delete
+    importing_id: str | None       # set when an `import { }` block resolves to this addr
+
+    @property
+    def action_kind(self) -> str:
+        """Single-token category for UI grouping/coloring.
+
+        Maps the OpenTofu actions array to one of:
+        - "create" — fresh resource
+        - "update" — in-place change
+        - "delete" — removal
+        - "replace" — destroy + recreate (`["delete", "create"]` or
+          `["create", "delete"]`)
+        - "import" — pure import, no other change
+        - "import_update" — import + concurrent attribute update
+        - "no-op" — refresh-only state change (rare in non-refresh plans)
+        - "read" — data source read (uncommon in plan diffs)
+        """
+        actions = self.actions
+        is_import = self.importing_id is not None
+        if set(actions) == {"create", "delete"} or set(actions) == {"delete", "create"}:
+            return "replace"
+        if actions == ["create"]:
+            return "create"
+        if actions == ["delete"]:
+            return "delete"
+        if actions == ["update"]:
+            return "import_update" if is_import else "update"
+        if actions == ["no-op"]:
+            return "import" if is_import else "no-op"
+        if actions == ["read"]:
+            return "read"
+        # Fall through — surface the raw join so the UI can still show something.
+        return "+".join(actions)
+
+
+def plan_diff(tofu_root: Path) -> dict[str, Any]:
+    """Run `tofu plan -out=<tmp>` then `tofu show -json <tmp>`.
+
+    Returns the raw plan JSON, which contains a top-level `resource_changes`
+    array (per the OpenTofu JSON-output spec). Plan generation can be slow
+    (5-30s real, faster against Moto); callers should set their own timeout.
+
+    Plan is *not* an apply — no mutation, no state lock acquired beyond
+    plan-time refresh. We do not pass `-lock=false` because a missing lock
+    would mask real concurrent-edit problems; the cost of waiting is small.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        planfile = Path(tmpdir) / "tofu.tfplan"
+        _run_tofu(
+            [
+                "plan",
+                "-out",
+                str(planfile),
+                "-no-color",
+                "-input=false",
+                # Default exit-code mode: 0 on success regardless of whether
+                # changes are pending. We don't want -detailed-exitcode here
+                # since "changes detected" (exit 2) shouldn't be a backend
+                # error.
+            ],
+            cwd=tofu_root,
+        )
+        raw = _run_tofu(["show", "-json", str(planfile)], cwd=tofu_root)
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+def changes_from_plan(plan: dict[str, Any]) -> list[ResourceChange]:
+    out: list[ResourceChange] = []
+    for rc in plan.get("resource_changes", []) or []:
+        change = rc.get("change") or {}
+        importing = change.get("importing") or None
+        out.append(
+            ResourceChange(
+                address=rc.get("address", ""),
+                type=rc.get("type", ""),
+                name=rc.get("name", ""),
+                module=rc.get("module_address", "") or "",
+                provider=rc.get("provider_name", ""),
+                mode=rc.get("mode", "managed"),
+                actions=list(change.get("actions") or []),
+                before=change.get("before"),
+                after=change.get("after"),
+                importing_id=(importing or {}).get("id") if importing else None,
+            )
+        )
+    return out
