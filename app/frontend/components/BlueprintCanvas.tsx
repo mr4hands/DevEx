@@ -58,6 +58,13 @@ export type BlueprintNodeData = {
    *  form uses these to pre-populate when an existing node is
    *  selected. Empty for newly-dropped nodes. */
   attributes?: Record<string, unknown>;
+  /** When set, the backend couldn't parse this resource's `.tf` file.
+   *  The drawer shows the error + a Delete button instead of the form,
+   *  so the user can recover from a malformed write. */
+  parseError?: string;
+  /** Original on-disk filename when known. Used as a fallback target
+   *  for Delete on parse-error nodes. */
+  filename?: string;
 } & Record<string, unknown>;  // index signature satisfies React Flow's Node constraint
 
 export type BlueprintNode = Node<BlueprintNodeData>;
@@ -318,6 +325,8 @@ function serverNodeFrom(
       family: meta.family,
       monogram: meta.monogram,
       attributes: r.attributes,
+      parseError: r.parse_error,
+      filename: r.filename,
     },
   };
 }
