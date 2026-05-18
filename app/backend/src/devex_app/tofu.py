@@ -92,6 +92,25 @@ def resources_from_state(state: dict[str, Any]) -> list[Resource]:
 
 
 # ---------------------------------------------------------------------------
+# Provider schema (Blueprint tab — `tofu providers schema -json`)
+# ---------------------------------------------------------------------------
+
+
+def providers_schema(tofu_root: Path) -> dict[str, Any]:
+    """`tofu providers schema -json` — returns the full provider schema
+    JSON for whatever providers are initialized in `tofu_root`.
+
+    Requires `tofu init` to have been run in that workspace at least
+    once. Schemas are large (the AWS provider alone is ~30MB); callers
+    should filter to the resource types they care about.
+    """
+    raw = _run_tofu(["providers", "schema", "-json"], cwd=tofu_root)
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+# ---------------------------------------------------------------------------
 # Plan-diff support
 # ---------------------------------------------------------------------------
 

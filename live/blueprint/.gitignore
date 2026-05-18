@@ -1,0 +1,6 @@
+# Local state file for the blueprint workspace (backend = local).
+# Promote to the S3 backend once the workspace stabilizes.
+terraform.tfstate
+terraform.tfstate.backup
+.terraform/
+.terraform.lock.hcl
