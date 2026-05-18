@@ -3,7 +3,9 @@
 import {
   Background,
   Controls,
+  Handle,
   MarkerType,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   useEdgesState,
@@ -398,12 +400,24 @@ function ResourceNode({ data, selected }: NodeProps<BlueprintNode>) {
   const classes = FAMILY_CLASSES[meta.family];
   return (
     <div
-      className={`flex items-center gap-2 px-2 py-1.5 rounded-sm bg-background border ${
+      className={`relative flex items-center gap-2 px-2 py-1.5 rounded-sm bg-background border ${
         selected
           ? "border-accent ring-1 ring-accent"
           : "border-border hover:border-accent"
       } shadow-sm transition-colors`}
     >
+      {/* React Flow needs explicit `Handle` components on a custom
+          node so edge endpoints can attach somewhere. Both source and
+          target use the default handle id (null) so the auto-derived
+          edges from /api/blueprint/resources line up — those edges
+          don't carry sourceHandle/targetHandle ids either. Visually
+          subdued: tiny circle inset behind the chip on the left and
+          past the label on the right. */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!w-1.5 !h-1.5 !bg-border !border-0"
+      />
       <span
         className={`inline-flex items-center justify-center px-1.5 h-[20px] min-w-[28px] rounded-sm ring-1 ring-inset font-mono text-[11px] uppercase ${classes.chip}`}
       >
@@ -417,6 +431,11 @@ function ResourceNode({ data, selected }: NodeProps<BlueprintNode>) {
           {data.resourceType}
         </div>
       </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!w-1.5 !h-1.5 !bg-border !border-0"
+      />
     </div>
   );
 }
