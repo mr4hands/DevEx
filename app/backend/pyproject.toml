@@ -10,6 +10,12 @@ dependencies = [
     "claude-agent-sdk>=0.1.0",
     "pydantic>=2.9",
     "python-dotenv>=1.0",
+    # Used by the Blueprint canvas to read the resource .tf files back
+    # off disk. We could regex-parse our own writes (they're tightly
+    # structured), but `python-hcl2` handles hand-edited HCL and HCL
+    # produced by the AI agent's Edit/Write tools — which matters
+    # because Phase 4's AI integration writes through those tools.
+    "python-hcl2>=5.1",
 ]
 
 [project.optional-dependencies]

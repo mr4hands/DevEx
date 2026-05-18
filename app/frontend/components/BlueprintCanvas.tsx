@@ -3,10 +3,13 @@
 import {
   Background,
   Controls,
+  MarkerType,
   ReactFlow,
   ReactFlowProvider,
+  useEdgesState,
   useNodesState,
   useReactFlow,
+  type Edge,
   type Node,
   type NodeProps,
 } from "@xyflow/react";
@@ -21,6 +24,7 @@ import {
   type DragEvent,
 } from "react";
 
+import { fetchBlueprintResources } from "@/lib/api";
 import {
   FAMILY_CLASSES,
   familyOf,
@@ -30,29 +34,30 @@ import {
   PALETTE_DRAG_TYPE,
   type PaletteItem,
 } from "@/lib/blueprintPalette";
+import type { BlueprintResource, BlueprintEdge } from "@/lib/types";
 
 /**
  * The Blueprint canvas — drag resource tiles from the palette onto the
  * grid to plan an OpenTofu workspace visually.
  *
- * Phase 1 scope (this PR):
- *   - Browser-only state. Nodes live in React state; nothing is
- *     written to HCL yet.
- *   - 5 supported resource types from the palette.
- *   - Click a node → fires `onSelectNode(node)` so the parent can
- *     swap the right-pane drawer to "edit blueprint node" mode.
+ * Phase 3 (this PR): the canvas is round-trippable. On mount + after
+ * every Save, it fetches `/api/blueprint/resources` and reconciles
+ * the React Flow state with what's on disk. Existing resources load
+ * with their saved attributes + positions; dependency edges are
+ * derived from inter-resource references in the HCL.
  *
- * Phase 2+ will add:
- *   - Schema-driven attribute form in the drawer
- *   - Write to HCL via a new backend endpoint
- *   - HCL-derived edges (dependencies)
- *   - AI agent integration (the agent edits HCL, canvas re-reads)
+ * Phase 4+ will add nested-block editing, auto-layout for newly-
+ * loaded nodes, and a polished delete-node interaction.
  */
 export type BlueprintNodeData = {
   resourceType: string;       // aws_s3_bucket
-  name: string;               // user-set label, default "<type>_<n>"
-  family: string;             // for the family color/monogram
+  name: string;               // HCL block label / file basename
+  family: string;             // family color/monogram
   monogram: string;
+  /** Pre-existing attribute values loaded from disk. The drawer's
+   *  form uses these to pre-populate when an existing node is
+   *  selected. Empty for newly-dropped nodes. */
+  attributes?: Record<string, unknown>;
 } & Record<string, unknown>;  // index signature satisfies React Flow's Node constraint
 
 export type BlueprintNode = Node<BlueprintNodeData>;
@@ -64,6 +69,7 @@ export function BlueprintCanvas({
   onSelectNode,
   renameEvent,
   onRenameConsumed,
+  reloadKey,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -72,6 +78,10 @@ export function BlueprintCanvas({
    *  via `onRenameConsumed`. */
   renameEvent?: RenameEvent | null;
   onRenameConsumed?: () => void;
+  /** Bumping this triggers a re-fetch of `/api/blueprint/resources`.
+   *  Used by the parent after Save or Delete so disk-side changes
+   *  reflect on the canvas. */
+  reloadKey?: number;
 }) {
   return (
     <ReactFlowProvider>
@@ -80,6 +90,7 @@ export function BlueprintCanvas({
         onSelectNode={onSelectNode}
         renameEvent={renameEvent}
         onRenameConsumed={onRenameConsumed}
+        reloadKey={reloadKey}
       />
     </ReactFlowProvider>
   );
@@ -90,16 +101,47 @@ function CanvasInner({
   onSelectNode,
   renameEvent,
   onRenameConsumed,
+  reloadKey,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
   renameEvent?: RenameEvent | null;
   onRenameConsumed?: () => void;
+  reloadKey?: number;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [nextNameByType, setNextNameByType] = useState<Record<string, number>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const { screenToFlowPosition } = useReactFlow();
+
+  // Load existing resources from disk on mount and whenever the parent
+  // bumps `reloadKey` (e.g., after a successful Save / Delete). The
+  // canvas reconciles server state with any client-only nodes the user
+  // dropped but hasn't saved yet — those keep their position; saved
+  // nodes get updated attributes + positions.
+  useEffect(() => {
+    let cancelled = false;
+    const ac = new AbortController();
+    fetchBlueprintResources(ac.signal)
+      .then((res) => {
+        if (cancelled) return;
+        setLoadError(null);
+        setNodes((prev) =>
+          reconcileNodes(prev, res.resources),
+        );
+        setEdges(buildEdges(res.edges));
+      })
+      .catch((e: Error) => {
+        if (cancelled || e.name === "AbortError") return;
+        setLoadError(e.message);
+      });
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+  }, [reloadKey, setNodes, setEdges]);
 
   const nodeTypes = useMemo(
     () => ({
@@ -184,7 +226,9 @@ function CanvasInner({
       <div ref={wrapperRef} className="flex-1 min-w-0 relative">
         <ReactFlow
           nodes={nodesWithSelection}
+          edges={edges}
           onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
           onDragOver={onDragOver}
           onDrop={onDrop}
           onNodeClick={onNodeClick}
@@ -196,7 +240,12 @@ function CanvasInner({
           <Background />
           <Controls position="bottom-right" />
         </ReactFlow>
-        {nodes.length === 0 && (
+        {loadError && (
+          <div className="absolute top-3 left-3 right-3 text-[11px] font-mono rounded-sm border border-red-200 dark:border-red-900 px-3 py-2 text-red-600 dark:text-red-400 bg-background/95 whitespace-pre-wrap">
+            {loadError}
+          </div>
+        )}
+        {nodes.length === 0 && !loadError && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <p className="text-xs text-muted-foreground">
               Drag a resource from the palette onto the canvas.
@@ -206,6 +255,87 @@ function CanvasInner({
       </div>
     </div>
   );
+}
+
+/**
+ * Merge server-side resources with whatever the user has already on
+ * the canvas:
+ *
+ *   - Nodes that exist on disk (matched by `<type>.<name>`) get their
+ *     attributes + position refreshed from the server. Their canvas id
+ *     stays stable so selection/highlight state doesn't flicker.
+ *   - Nodes that the user dropped but hasn't saved yet (no server
+ *     match) are preserved as-is — losing un-saved work on every
+ *     reload would feel awful.
+ *   - Server-side resources the canvas doesn't have yet (e.g., the AI
+ *     agent created one via Write) are added as fresh nodes.
+ */
+function reconcileNodes(
+  existing: BlueprintNode[],
+  server: BlueprintResource[],
+): BlueprintNode[] {
+  const serverByAddress = new Map(
+    server.map((r) => [`${r.type}.${r.name}`, r]),
+  );
+  // Existing nodes that have a saved counterpart get a stable update.
+  const merged: BlueprintNode[] = [];
+  const consumed = new Set<string>();
+
+  for (const n of existing) {
+    const addr = `${n.data.resourceType}.${n.data.name}`;
+    const serverEntry = serverByAddress.get(addr);
+    if (serverEntry) {
+      consumed.add(addr);
+      merged.push(serverNodeFrom(serverEntry, n.id));
+    } else {
+      // Treat unsaved nodes as those whose names don't yet exist on
+      // disk. Keep them — un-saved drops shouldn't vanish on reload.
+      merged.push(n);
+    }
+  }
+  // Resources that exist on disk but the canvas didn't know about
+  // (e.g., produced by the AI agent's Edit tool) get added fresh.
+  for (const r of server) {
+    const addr = `${r.type}.${r.name}`;
+    if (consumed.has(addr)) continue;
+    merged.push(serverNodeFrom(r));
+  }
+  return merged;
+}
+
+function serverNodeFrom(
+  r: BlueprintResource,
+  existingId?: string,
+): BlueprintNode {
+  const meta = familyOf(r.type);
+  return {
+    id: existingId ?? `${r.type}.${r.name}`,
+    type: "resource",
+    position: r.position,
+    data: {
+      resourceType: r.type,
+      name: r.name,
+      family: meta.family,
+      monogram: meta.monogram,
+      attributes: r.attributes,
+    },
+  };
+}
+
+function buildEdges(serverEdges: BlueprintEdge[]): Edge[] {
+  // Source/target identify a node by `<type>.<name>` — the same
+  // address `reconcileNodes` uses for the id when fabricating server-
+  // origin nodes. Existing-user nodes have a different id format
+  // (`<type>.<name>_<n>_<ts>`); they have no saved counterpart yet so
+  // they have no edges anyway.
+  return serverEdges.map((e) => ({
+    id: `${e.source}->${e.target}`,
+    source: e.source,
+    target: e.target,
+    type: "default",
+    animated: false,
+    markerEnd: { type: MarkerType.ArrowClosed },
+  }));
 }
 
 function Palette() {

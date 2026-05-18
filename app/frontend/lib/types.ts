@@ -96,6 +96,26 @@ export type SchemasResponse = {
   resources: Record<string, ResourceSchema>;
 };
 
+export type BlueprintResource = {
+  type: string;
+  name: string;
+  attributes: Record<string, unknown>;
+  position: { x: number; y: number };
+  filename: string;
+  parse_error?: string;
+};
+
+export type BlueprintEdge = {
+  source: string; // "<type>.<name>"
+  target: string; // "<type>.<name>"
+};
+
+export type BlueprintResourcesResponse = {
+  blueprint_root: string;
+  resources: BlueprintResource[];
+  edges: BlueprintEdge[];
+};
+
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;

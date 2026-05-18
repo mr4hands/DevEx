@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { fetchSchemas, writeBlueprintResource } from "@/lib/api";
+import {
+  deleteBlueprintResource,
+  fetchSchemas,
+  writeBlueprintResource,
+} from "@/lib/api";
 import { FAMILY_CLASSES, familyOf } from "@/lib/resourceFamilies";
 import type { BlueprintNode } from "@/components/BlueprintCanvas";
 import type { ResourceAttribute, ResourceSchema } from "@/lib/types";
@@ -37,12 +41,18 @@ export function BlueprintNodeDrawer({
   node,
   onClose,
   onRename,
+  onResourceWritten,
+  onResourceDeleted,
 }: {
   node: BlueprintNode | null;
   onClose: () => void;
   /** Fired when Save succeeds with a new name so the canvas can update
    *  the node's label without a full reload. */
   onRename?: (nodeId: string, newName: string) => void;
+  /** Fired after a successful Save or Delete so the parent can bump
+   *  the canvas's `reloadKey` and re-fetch from disk. */
+  onResourceWritten?: () => void;
+  onResourceDeleted?: (nodeId: string) => void;
 }) {
   const [schema, setSchema] = useState<ResourceSchema | null>(null);
   const [loading, setLoading] = useState(false);
@@ -60,7 +70,16 @@ export function BlueprintNodeDrawer({
   const nodeKey = node?.id ?? null;
   const formState = useMemo(() => {
     if (!node || !nodeKey) return null;
-    return valuesByNode[nodeKey] ?? { name: node.data.name, attrs: {} };
+    const existing = valuesByNode[nodeKey];
+    if (existing) return existing;
+    // First selection of this node — seed the form from whatever the
+    // server already knows about it (Phase 3 round-trip). For fresh
+    // canvas drops, `attributes` is undefined and the form starts
+    // empty.
+    return {
+      name: node.data.name,
+      attrs: (node.data.attributes as Record<string, unknown>) ?? {},
+    };
   }, [node, nodeKey, valuesByNode]);
 
   useEffect(() => {
@@ -158,10 +177,35 @@ export function BlueprintNodeDrawer({
       if (onRename && formState.name !== node.data.name) {
         onRename(node.id, formState.name);
       }
+      onResourceWritten?.();
     } catch (e) {
       setSaveState({ status: "error", message: (e as Error).message });
     }
-  }, [node, formState, schema, onRename]);
+  }, [node, formState, schema, onRename, onResourceWritten]);
+
+  const handleDelete = useCallback(async () => {
+    if (!node) return;
+    // Only saved resources have a file to delete. For brand-new canvas
+    // drops, just clear the node from the canvas locally.
+    const hasFile =
+      node.data.attributes !== undefined ||
+      // Backwards-compatible heuristic: nodes that were loaded from
+      // server-side state have id == "<type>.<name>" (no random suffix).
+      node.id === `${node.data.resourceType}.${node.data.name}`;
+    setSaveState({ status: "saving" });
+    try {
+      if (hasFile) {
+        await deleteBlueprintResource(
+          node.data.resourceType,
+          node.data.name,
+        );
+      }
+      setSaveState({ status: "idle" });
+      onResourceDeleted?.(node.id);
+    } catch (e) {
+      setSaveState({ status: "error", message: (e as Error).message });
+    }
+  }, [node, onResourceDeleted]);
 
   const requiredAttrs = useMemo(
     () => schema?.attributes.filter((a) => a.required) ?? [],
@@ -350,17 +394,28 @@ export function BlueprintNodeDrawer({
         )}
       </div>
 
-      {/* Footer — Save */}
+      {/* Footer — Save + Delete */}
       {schema && formState && (
         <div className="shrink-0 border-t border-border px-3 py-2.5 bg-muted/40 space-y-2">
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saveState.status === "saving" || !formState.name.trim()}
-            className="w-full inline-flex items-center justify-center gap-2 h-8 px-3 bg-accent hover:opacity-90 text-white text-xs font-medium rounded-sm transition-colors disabled:opacity-50"
-          >
-            {saveState.status === "saving" ? "Saving…" : "Save resource"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saveState.status === "saving" || !formState.name.trim()}
+              className="flex-1 inline-flex items-center justify-center gap-2 h-8 px-3 bg-accent hover:opacity-90 text-white text-xs font-medium rounded-sm transition-colors disabled:opacity-50"
+            >
+              {saveState.status === "saving" ? "Saving…" : "Save resource"}
+            </button>
+            <button
+              type="button"
+              onClick={handleDelete}
+              disabled={saveState.status === "saving"}
+              title="Remove resource (deletes the .tf file if it was saved)"
+              className="inline-flex items-center justify-center h-8 px-3 border border-border hover:bg-muted hover:border-red-300 dark:hover:border-red-800 text-xs text-foreground rounded-sm transition-colors disabled:opacity-50"
+            >
+              Delete
+            </button>
+          </div>
           {saveState.status === "saved" && (
             <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-400 break-all">
               ✓ wrote {saveState.path}

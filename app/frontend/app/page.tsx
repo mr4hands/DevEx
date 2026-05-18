@@ -28,6 +28,10 @@ export default function Home() {
   const [blueprintRename, setBlueprintRename] = useState<
     { nodeId: string; newName: string } | null
   >(null);
+  // Bumped after every successful Save or Delete in the drawer so the
+  // canvas refetches the server-side resources + edges. Phase 3's
+  // round-trip flows through this signal.
+  const [blueprintReload, setBlueprintReload] = useState(0);
 
   // Hoisted plan-diff state — shared across PlanDiff, ResourceList
   // (pending indicators), and ResourceDrawer (in-plan strip + change).
@@ -140,6 +144,7 @@ export default function Home() {
             onSelectNode={setBlueprintNode}
             renameEvent={blueprintRename}
             onRenameConsumed={() => setBlueprintRename(null)}
+            reloadKey={blueprintReload}
           />
         )}
       </section>
@@ -155,6 +160,13 @@ export default function Home() {
                   ? { ...prev, data: { ...prev.data, name: newName } }
                   : prev,
               );
+            }}
+            onResourceWritten={() => setBlueprintReload((k) => k + 1)}
+            onResourceDeleted={(nodeId) => {
+              setBlueprintNode((prev) =>
+                prev && prev.id === nodeId ? null : prev,
+              );
+              setBlueprintReload((k) => k + 1);
             }}
           />
         ) : (
