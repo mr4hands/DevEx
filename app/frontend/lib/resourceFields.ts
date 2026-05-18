@@ -176,7 +176,11 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
 }
 
 export function fmtValue(v: unknown): string {
-  if (v === undefined) return "(unset)";
+  // Match the OpenTofu/Terraform CLI plan output convention: both
+  // undefined attributes (not present in the payload at all) and
+  // null attributes render as `null` so users see the same string
+  // here that they'd see in `tofu plan` output.
+  if (v === undefined) return "null";
   if (v === null) return "null";
   if (typeof v === "string") return `"${v}"`;
   if (typeof v === "number" || typeof v === "boolean") return String(v);
