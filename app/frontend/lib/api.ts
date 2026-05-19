@@ -88,6 +88,13 @@ export async function writeBlueprintResource(
     type: string;
     name: string;
     attributes: Record<string, unknown>;
+    blocks?: Record<
+      string,
+      Array<{
+        attributes: Record<string, unknown>;
+        blocks: Record<string, unknown>;
+      }>
+    >;
     position?: { x: number; y: number } | null;
   },
   signal?: AbortSignal,

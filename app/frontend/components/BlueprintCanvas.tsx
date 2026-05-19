@@ -36,7 +36,11 @@ import {
   PALETTE_DRAG_TYPE,
   type PaletteItem,
 } from "@/lib/blueprintPalette";
-import type { BlueprintResource, BlueprintEdge } from "@/lib/types";
+import type {
+  BlueprintBlockInstance,
+  BlueprintEdge,
+  BlueprintResource,
+} from "@/lib/types";
 
 /**
  * The Blueprint canvas — drag resource tiles from the palette onto the
@@ -60,6 +64,9 @@ export type BlueprintNodeData = {
    *  form uses these to pre-populate when an existing node is
    *  selected. Empty for newly-dropped nodes. */
   attributes?: Record<string, unknown>;
+  /** Nested blocks (`versioning`, `lifecycle_rule`, etc.) loaded from
+   *  disk, alongside `attributes`. Empty for fresh drops. */
+  blocks?: Record<string, BlueprintBlockInstance[]>;
   /** When set, the backend couldn't parse this resource's `.tf` file.
    *  The drawer shows the error + a Delete button instead of the form,
    *  so the user can recover from a malformed write. */
@@ -398,6 +405,7 @@ function serverNodeFrom(
       family: meta.family,
       monogram: meta.monogram,
       attributes: r.attributes,
+      blocks: r.blocks,
       parseError: r.parse_error,
       filename: r.filename,
     },

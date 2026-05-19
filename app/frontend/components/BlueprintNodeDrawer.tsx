@@ -9,7 +9,12 @@ import {
 } from "@/lib/api";
 import { FAMILY_CLASSES, familyOf } from "@/lib/resourceFamilies";
 import type { BlueprintNode } from "@/components/BlueprintCanvas";
-import type { ResourceAttribute, ResourceSchema } from "@/lib/types";
+import type {
+  BlueprintBlockInstance,
+  ResourceAttribute,
+  ResourceBlockType,
+  ResourceSchema,
+} from "@/lib/types";
 
 /**
  * Right-pane drawer for the Blueprint canvas — shown when the middle
@@ -31,6 +36,7 @@ import type { ResourceAttribute, ResourceSchema } from "@/lib/types";
 const schemaCache = new Map<string, ResourceSchema>();
 
 type FormValues = Record<string, unknown>;
+type FormBlocks = Record<string, BlueprintBlockInstance[]>;
 type SaveState =
   | { status: "idle" }
   | { status: "saving" }
@@ -59,9 +65,9 @@ export function BlueprintNodeDrawer({
   const [error, setError] = useState<string | null>(null);
 
   // Per-node form state. The outer map key is the node id; inner is
-  // the attribute name → value. Survives across node toggles.
+  // `{name, attrs, blocks}`. Survives across node toggles.
   const [valuesByNode, setValuesByNode] = useState<
-    Record<string, { name: string; attrs: FormValues }>
+    Record<string, { name: string; attrs: FormValues; blocks: FormBlocks }>
   >({});
   const [search, setSearch] = useState("");
   const [showAll, setShowAll] = useState(false);
@@ -74,11 +80,12 @@ export function BlueprintNodeDrawer({
     if (existing) return existing;
     // First selection of this node — seed the form from whatever the
     // server already knows about it (Phase 3 round-trip). For fresh
-    // canvas drops, `attributes` is undefined and the form starts
-    // empty.
+    // canvas drops, `attributes`/`blocks` are undefined and the form
+    // starts empty.
     return {
       name: node.data.name,
       attrs: (node.data.attributes as Record<string, unknown>) ?? {},
+      blocks: node.data.blocks ?? {},
     };
   }, [node, nodeKey, valuesByNode]);
 
@@ -137,6 +144,7 @@ export function BlueprintNodeDrawer({
         [nodeKey]: {
           name: value,
           attrs: prev[nodeKey]?.attrs ?? {},
+          blocks: prev[nodeKey]?.blocks ?? {},
         },
       }));
     },
@@ -147,13 +155,35 @@ export function BlueprintNodeDrawer({
     (attr: string, value: unknown) => {
       if (!nodeKey) return;
       setValuesByNode((prev) => {
-        const current = prev[nodeKey] ?? { name: node!.data.name, attrs: {} };
+        const current = prev[nodeKey] ?? {
+          name: node!.data.name,
+          attrs: {},
+          blocks: {},
+        };
         return {
           ...prev,
           [nodeKey]: {
             ...current,
             attrs: { ...current.attrs, [attr]: value },
           },
+        };
+      });
+    },
+    [nodeKey, node],
+  );
+
+  const setBlocks = useCallback(
+    (next: FormBlocks) => {
+      if (!nodeKey) return;
+      setValuesByNode((prev) => {
+        const current = prev[nodeKey] ?? {
+          name: node!.data.name,
+          attrs: {},
+          blocks: {},
+        };
+        return {
+          ...prev,
+          [nodeKey]: { ...current, blocks: next },
         };
       });
     },
@@ -176,6 +206,7 @@ export function BlueprintNodeDrawer({
         type: node.data.resourceType,
         name: formState.name,
         attributes: cleanAttrs,
+        blocks: formState.blocks,
         position: node.position
           ? { x: node.position.x, y: node.position.y }
           : null,
@@ -397,21 +428,21 @@ export function BlueprintNodeDrawer({
             )}
 
             {schema.block_types.length > 0 && (
-              <section className="border-t border-border pt-3">
+              <section className="border-t border-border pt-3 space-y-2">
                 <SectionHeader
                   title="Nested blocks"
                   count={schema.block_types.length}
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground italic">
-                  Nested blocks ({schema.block_types
-                    .slice(0, 3)
-                    .map((b) => b.name)
-                    .join(", ")}
-                  {schema.block_types.length > 3
-                    ? `, +${schema.block_types.length - 3} more`
-                    : ""}
-                  ) aren&apos;t editable in Phase 2 — coming in Phase 3.
-                </p>
+                {schema.block_types.map((bt) => (
+                  <BlockEditor
+                    key={bt.name}
+                    blockType={bt}
+                    instances={formState.blocks[bt.name] ?? []}
+                    onChange={(next) =>
+                      setBlocks({ ...formState.blocks, [bt.name]: next })
+                    }
+                  />
+                ))}
               </section>
             )}
           </>
@@ -626,4 +657,209 @@ function attrKind(type: unknown): "string" | "number" | "bool" | "complex" {
   // Anything nested (list/set/map/object/tuple) goes through the
   // JSON textarea for v1.
   return "complex";
+}
+
+/**
+ * Recursive editor for one nested block type (`versioning`, `ingress`,
+ * `lifecycle_rule`, etc.). Renders the schema's attribute form per
+ * instance + a recursive `BlockEditor` for each of the block type's
+ * own `block_types`, so e.g., `lifecycle_rule → transition → ...`
+ * editable all the way down.
+ *
+ * Nesting mode handling:
+ *   - `single` — at most one instance. Renders "Add" only when empty.
+ *   - `list` / `set` — N instances. "Add" appends; per-instance × removes.
+ *   - `map` — not supported in Phase 4. Few of our 5 MVP types use it.
+ *
+ * Empty instances (no attrs, no nested blocks) still survive — they
+ * render as `versioning {}` on disk, matching what `tofu fmt` produces
+ * for "configured-but-no-args" blocks.
+ */
+function BlockEditor({
+  blockType,
+  instances,
+  onChange,
+  depth = 0,
+}: {
+  blockType: ResourceBlockType;
+  instances: BlueprintBlockInstance[];
+  onChange: (next: BlueprintBlockInstance[]) => void;
+  depth?: number;
+}) {
+  const [collapsed, setCollapsed] = useState(true);
+  const canAdd =
+    instances.length === 0 ||
+    blockType.nesting_mode === "list" ||
+    blockType.nesting_mode === "set";
+  const maxItems =
+    blockType.max_items > 0 ? blockType.max_items : Number.POSITIVE_INFINITY;
+  const atMax = instances.length >= maxItems;
+
+  const addInstance = () =>
+    onChange([...instances, { attributes: {}, blocks: {} }]);
+  const removeAt = (idx: number) =>
+    onChange(instances.filter((_, i) => i !== idx));
+  const updateAt = (idx: number, patch: Partial<BlueprintBlockInstance>) =>
+    onChange(
+      instances.map((it, i) => (i === idx ? { ...it, ...patch } : it)),
+    );
+
+  return (
+    <div className="rounded-sm border border-border bg-muted/30">
+      <button
+        type="button"
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center gap-2 px-2 h-7 text-left hover:bg-muted/60"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="9"
+          height="9"
+          viewBox="0 0 10 10"
+          fill="none"
+          className={`text-muted-foreground transition-transform ${collapsed ? "" : "rotate-90"}`}
+        >
+          <path
+            d="M3 2l4 3-4 3"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            fill="none"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="text-[11px] font-mono text-foreground">
+          {blockType.name}
+        </span>
+        <span className="text-[10px] font-mono text-muted-foreground">
+          {instances.length > 0 ? `× ${instances.length}` : "empty"}
+        </span>
+        <span className="ml-auto text-[10px] font-mono text-muted-foreground">
+          {blockType.nesting_mode}
+        </span>
+      </button>
+      {!collapsed && (
+        <div className="px-2 pb-2 space-y-2">
+          {instances.map((inst, i) => (
+            <BlockInstanceEditor
+              key={i}
+              instance={inst}
+              blockType={blockType}
+              depth={depth}
+              onUpdate={(patch) => updateAt(i, patch)}
+              onRemove={() => removeAt(i)}
+              instanceIndex={i}
+              isOnlyInstance={instances.length === 1}
+            />
+          ))}
+          {canAdd && !atMax && (
+            <button
+              type="button"
+              onClick={addInstance}
+              className="w-full text-[10px] font-mono text-muted-foreground hover:text-foreground border border-dashed border-border rounded-sm h-7"
+            >
+              + add {blockType.name}
+            </button>
+          )}
+          {blockType.truncated && (
+            <p className="text-[10px] text-muted-foreground italic">
+              Deeper nesting exists but isn&apos;t surfaced (schema cap).
+              Edit via chat or directly in the .tf file.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BlockInstanceEditor({
+  instance,
+  blockType,
+  depth,
+  onUpdate,
+  onRemove,
+  instanceIndex,
+  isOnlyInstance,
+}: {
+  instance: BlueprintBlockInstance;
+  blockType: ResourceBlockType;
+  depth: number;
+  onUpdate: (patch: Partial<BlueprintBlockInstance>) => void;
+  onRemove: () => void;
+  instanceIndex: number;
+  isOnlyInstance: boolean;
+}) {
+  const setAttr = (name: string, value: unknown) =>
+    onUpdate({ attributes: { ...instance.attributes, [name]: value } });
+  const setNestedBlocks = (
+    nestedName: string,
+    next: BlueprintBlockInstance[],
+  ) =>
+    onUpdate({ blocks: { ...instance.blocks, [nestedName]: next } });
+
+  const requiredAttrs = blockType.attributes.filter((a) => a.required);
+  const optionalAttrs = blockType.attributes.filter(
+    (a) => !a.required && !a.deprecated,
+  );
+
+  return (
+    <div className="rounded-sm border border-border bg-background p-2">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[10px] font-mono text-muted-foreground">
+          {blockType.name}
+          {!isOnlyInstance && (blockType.nesting_mode === "list" || blockType.nesting_mode === "set")
+            ? ` [${instanceIndex}]`
+            : ""}
+        </span>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="Remove block instance"
+          title="Remove"
+          className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-muted-foreground hover:text-red-600 dark:hover:text-red-400 rounded-sm"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M2.5 2.5l7 7M9.5 2.5l-7 7"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
+      </div>
+      <div className="space-y-1.5">
+        {requiredAttrs.map((a) => (
+          <AttrInput
+            key={a.name}
+            attr={a}
+            value={instance.attributes[a.name]}
+            onChange={(v) => setAttr(a.name, v)}
+          />
+        ))}
+        {optionalAttrs.map((a) => (
+          <AttrInput
+            key={a.name}
+            attr={a}
+            value={instance.attributes[a.name]}
+            onChange={(v) => setAttr(a.name, v)}
+          />
+        ))}
+      </div>
+      {blockType.block_types.length > 0 && (
+        <div className="mt-2 space-y-1.5">
+          {blockType.block_types.map((bt) => (
+            <BlockEditor
+              key={bt.name}
+              blockType={bt}
+              instances={instance.blocks[bt.name] ?? []}
+              onChange={(next) => setNestedBlocks(bt.name, next)}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }

@@ -73,14 +73,29 @@ export type ResourceAttribute = {
   deprecated: boolean;
 };
 
+/**
+ * Recursive nested-block schema. `attributes` + `block_types` mirror
+ * the top-level resource schema, allowing the form to render N levels
+ * deep (capped by the backend at `_MAX_BLOCK_DEPTH`). `truncated`
+ * means the backend stopped recursing on this branch; the UI hints
+ * at it instead of pretending the block has no nesting.
+ */
 export type ResourceBlockType = {
   name: string;
   nesting_mode: string;
   description: string;
   min_items: number;
   max_items: number;
-  attribute_count: number;
-  nested_block_count: number;
+  attributes: ResourceAttribute[];
+  block_types: ResourceBlockType[];
+  truncated: boolean;
+};
+
+/** One instance of a nested block in the canvas write/read shape.
+ *  Mirrors `BlockInstance` in the backend Pydantic model. */
+export type BlueprintBlockInstance = {
+  attributes: Record<string, unknown>;
+  blocks: Record<string, BlueprintBlockInstance[]>;
 };
 
 export type ResourceSchema = {
@@ -100,6 +115,10 @@ export type BlueprintResource = {
   type: string;
   name: string;
   attributes: Record<string, unknown>;
+  /** Nested blocks (`versioning`, `lifecycle_rule`, etc.) when the
+   *  resource was successfully parsed. Always present in the response
+   *  shape post-Phase 4 — `{}` when the resource has no blocks. */
+  blocks: Record<string, BlueprintBlockInstance[]>;
   position: { x: number; y: number };
   filename: string;
   parse_error?: string;
