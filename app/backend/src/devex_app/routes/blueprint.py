@@ -157,17 +157,35 @@ def _normalize_attributes(attrs: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _normalize_block_types(block_types: dict[str, Any]) -> list[dict[str, Any]]:
-    """Same shape as `_normalize_attributes` but for nested blocks
-    (`versioning { ... }`, `lifecycle_rule { ... }`, etc.). We surface
-    them at one level deep so the form can render a 'configure block'
-    button per nested type; full deep-tree handling is a follow-up."""
+# Max recursion depth when normalizing nested block_types into the
+# schema response. AWS provider schemas can nest 5+ levels deep
+# (lifecycle_rule → transition → ...); we cap at 3 to keep the form
+# manageable. Deeper-nested blocks come back as `{ ..., block_types: [] }`
+# — the form falls back to a "deeper than supported" hint for those.
+_MAX_BLOCK_DEPTH = 3
+
+
+def _normalize_block_types(
+    block_types: dict[str, Any],
+    depth: int = 0,
+) -> list[dict[str, Any]]:
+    """Recursive provider-schema normalizer for nested blocks
+    (`versioning { ... }`, `lifecycle_rule { ... }`, etc.). At each
+    level we return the block's `attributes` (full schema, same shape
+    as the top-level resource attrs) and its `block_types` (recursed
+    up to `_MAX_BLOCK_DEPTH`). The frontend form can render editors
+    for any depth the response actually contains; truncated branches
+    show as collapsed "deeper than supported" hints."""
     out: list[dict[str, Any]] = []
     for name, info in block_types.items():
         nesting = info.get("nesting_mode") or ""
         block = info.get("block") or {}
-        attr_count = len(block.get("attributes") or {})
-        nested_count = len(block.get("block_types") or {})
+        nested_block_types: list[dict[str, Any]] = []
+        if depth < _MAX_BLOCK_DEPTH:
+            nested_block_types = _normalize_block_types(
+                block.get("block_types") or {},
+                depth=depth + 1,
+            )
         out.append(
             {
                 "name": name,
@@ -175,8 +193,11 @@ def _normalize_block_types(block_types: dict[str, Any]) -> list[dict[str, Any]]:
                 "description": info.get("description") or block.get("description") or "",
                 "min_items": info.get("min_items") or 0,
                 "max_items": info.get("max_items") or 0,
-                "attribute_count": attr_count,
-                "nested_block_count": nested_count,
+                "attributes": _normalize_attributes(block.get("attributes") or {}),
+                "block_types": nested_block_types,
+                # Surface whether we truncated, so the UI can hint at it.
+                "truncated": depth >= _MAX_BLOCK_DEPTH
+                and bool(block.get("block_types")),
             }
         )
     out.sort(key=lambda b: b["name"])
@@ -200,18 +221,38 @@ _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 _DELETE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]+$")
 
 
+class BlockInstance(BaseModel):
+    """One instance of a nested HCL block (e.g., one `ingress` rule
+    inside an `aws_security_group`).
+
+    `attributes` are the block's leaf-level values. `blocks` is the
+    same map shape as on `ResourceWriteRequest`, recursively — so
+    `lifecycle_rule.transition` etc. round-trip through the same
+    structure all the way down."""
+
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
+
+
 class ResourceWriteRequest(BaseModel):
     """The body of `POST /api/blueprint/resource`.
 
-    `attributes` are user-supplied values keyed by attribute name. Only
-    primitives (str / int / float / bool) and JSON-serializable lists/maps
-    are supported in Phase 2 — anything fancier than that should round-
-    trip via the future block-types form.
+    `attributes` are user-supplied leaf-level values keyed by attribute
+    name (string / number / bool / JSON-serializable list-or-map).
+
+    `blocks` carries nested HCL blocks (`versioning {}`, `ingress {}`,
+    `lifecycle_rule {}`, etc.) as a map of `block_name → list[BlockInstance]`.
+    The list shape works for every nesting_mode: `single` blocks have
+    0 or 1 entries; `list`/`set` blocks have N entries; `map` blocks
+    are flattened to a list with the key in the attributes (Phase 4
+    doesn't fully support map mode — most AWS schemas use list/set
+    for the resources we care about).
     """
 
     type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
     name: str = Field(..., description="HCL block label, e.g. 'logs'")
     attributes: dict[str, Any] = Field(default_factory=dict)
+    blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
     position: dict[str, float] | None = Field(
         default=None,
         description="Optional canvas (x, y) coords. Stored in `_layout.json` "
@@ -256,7 +297,12 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
 
     filename = f"{req.type}.{req.name}.tf"
     path = resources_dir / filename
-    hcl = _render_resource_block(req.type, req.name, req.attributes)
+    hcl = _render_resource_block(
+        req.type,
+        req.name,
+        req.attributes,
+        req.blocks,
+    )
     # Use a temp-write + rename so an interrupted write can't leave a
     # half-formed `.tf` that `tofu validate` would choke on.
     tmp = path.with_suffix(".tf.tmp")
@@ -277,35 +323,100 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
 
 
 def _render_resource_block(
-    type_: str, name: str, attributes: dict[str, Any]
+    type_: str,
+    name: str,
+    attributes: dict[str, Any],
+    blocks: dict[str, list[BlockInstance]] | None = None,
 ) -> str:
     """Build the HCL text for a single resource block.
 
-    Top-level attributes get rendered as `<name> = <value>`. Values are
-    typed: strings get quoted (with escaping), bools/numbers render
-    verbatim, lists/maps are rendered as inline HCL collections. Nested
-    blocks (e.g. `versioning { ... }`) aren't supported in Phase 2 —
-    block-type values are silently skipped here and the form prevents
-    submitting them.
-    """
-    # Skip empty / null values so we don't litter the file with
-    # `argument = null` that the user didn't intend to set.
-    filtered = {k: v for k, v in attributes.items() if v not in (None, "", [])}
+    Top-level attributes get rendered as `<name> = <value>`. Nested
+    blocks render with the standard HCL block syntax:
 
-    if not filtered:
+        resource "aws_s3_bucket" "logs" {
+          bucket = "my-bucket"
+
+          versioning {
+            enabled = true
+          }
+        }
+
+    Values are typed: strings get quoted (with escaping), bools/numbers
+    render verbatim, lists/maps as inline HCL collections, reference-
+    shaped strings as bare expressions. Empty/null values are dropped
+    so we don't litter the file with `attr = null`.
+
+    Phase 4 added nested-block support (the `blocks` arg) — instances
+    flatten via `_render_block_body` recursively, so `lifecycle_rule
+    { transition { ... } }` round-trips without special-casing.
+    """
+    filtered_attrs = {
+        k: v for k, v in attributes.items() if v not in (None, "", [])
+    }
+    nonempty_blocks = {
+        bn: list(instances)
+        for bn, instances in (blocks or {}).items()
+        if instances
+    }
+
+    if not filtered_attrs and not nonempty_blocks:
         return f'resource "{type_}" "{name}" {{}}\n'
 
-    # Find the widest attribute name so all `=`s align like the formatter
-    # would produce. This keeps the saved file looking like what
-    # `tofu fmt` would emit, so the round-trip isn't noisy.
-    width = max(len(k) for k in filtered)
+    body_lines = _render_block_body(filtered_attrs, nonempty_blocks, indent=1)
+    lines = [f'resource "{type_}" "{name}" {{', *body_lines, "}"]
+    return "\n".join(lines) + "\n"
 
-    lines = [f'resource "{type_}" "{name}" {{']
-    for key, value in sorted(filtered.items()):
-        rendered = _render_hcl_value(value)
-        lines.append(f"  {key.ljust(width)} = {rendered}")
-    lines.append("}\n")
-    return "\n".join(lines)
+
+def _render_block_body(
+    attributes: dict[str, Any],
+    blocks: dict[str, list[Any]],
+    indent: int,
+) -> list[str]:
+    """Render the body of a `{ ... }` block: top-level attributes
+    aligned by `=`, then nested blocks each on their own newline-
+    separated block. Used both for the top-level resource body and
+    recursively for nested blocks (versioning, lifecycle_rule, etc.).
+    """
+    pad = "  " * indent
+    out: list[str] = []
+    filtered_attrs = {
+        k: v for k, v in attributes.items() if v not in (None, "", [])
+    }
+    if filtered_attrs:
+        width = max(len(k) for k in filtered_attrs)
+        for key, value in sorted(filtered_attrs.items()):
+            out.append(f"{pad}{key.ljust(width)} = {_render_hcl_value(value)}")
+
+    for block_name in sorted(blocks):
+        for inst in blocks[block_name]:
+            inst_attrs = (
+                inst.attributes if isinstance(inst, BlockInstance) else inst.get("attributes", {})
+            )
+            inst_blocks = (
+                inst.blocks if isinstance(inst, BlockInstance) else inst.get("blocks", {})
+            )
+            inst_filtered_attrs = {
+                k: v for k, v in inst_attrs.items() if v not in (None, "", [])
+            }
+            inst_nonempty_blocks = {
+                bn: list(insts) for bn, insts in (inst_blocks or {}).items() if insts
+            }
+            # Empty-body block: write as `name {}` and move on.
+            if not inst_filtered_attrs and not inst_nonempty_blocks:
+                # Blank line before each nested block keeps the file
+                # reading like `tofu fmt` output.
+                if out:
+                    out.append("")
+                out.append(f"{pad}{block_name} {{}}")
+                continue
+            if out:
+                out.append("")
+            out.append(f"{pad}{block_name} {{")
+            out.extend(
+                _render_block_body(inst_filtered_attrs, inst_nonempty_blocks, indent + 1)
+            )
+            out.append(f"{pad}}}")
+    return out
 
 
 def _render_hcl_value(value: Any) -> str:
@@ -502,19 +613,23 @@ def list_resources() -> dict[str, Any]:
         name = parsed["name"]
         address = f"{type_}.{name}"
         attrs = parsed["attributes"]
+        blocks = parsed.get("blocks") or {}
 
         resources.append(
             {
                 "type": type_,
                 "name": name,
                 "attributes": attrs,
+                "blocks": blocks,
                 "position": layout.get(address, {"x": 0, "y": 0}),
                 "filename": path.name,
             }
         )
 
-        # Walk the attributes looking for ${<type>.<name>...} refs.
-        for ref_target in _find_references(attrs):
+        # Walk attributes AND nested-block values for `${<type>.<name>...}`
+        # refs so an SG rule's `security_groups = [aws_security_group.x.id]`
+        # still draws an edge.
+        for ref_target in _find_references({"attrs": attrs, "blocks": blocks}):
             refs.append((address, ref_target))
 
     # Edges only count when both endpoints exist as resources on the
@@ -563,8 +678,14 @@ def _split_filename(stem: str) -> tuple[str, str]:
 def _parse_resource_file(path: Path) -> dict[str, Any] | None:
     """Parses one `*.tf` file expected to hold exactly one `resource`
     block (the shape this module writes). Returns
-    `{type, name, attributes}` with HCL quoting stripped, or `None`
-    if the file doesn't actually contain a resource block.
+    `{type, name, attributes, blocks}` with HCL quoting stripped, or
+    `None` if the file doesn't actually contain a resource block.
+
+    Phase 4 split: leaf-level attributes go in `attributes`; nested
+    blocks (single, list, or set nesting modes) go in `blocks` as
+    `{block_name: [BlockInstance, ...]}`. python-hcl2 marks blocks
+    with `__is_block__: True` — we use that to distinguish a
+    `versioning { ... }` block from a `tags = {...}` map.
     """
     raw = path.read_text(encoding="utf-8")
     parsed = hcl2.loads(raw)
@@ -572,7 +693,7 @@ def _parse_resource_file(path: Path) -> dict[str, Any] | None:
     if not resource_blocks:
         return None
     block = resource_blocks[0]
-    # Shape: `{ '"aws_s3_bucket"': { '"logs"': { <attrs> } } }`.
+    # Shape: `{ '"aws_s3_bucket"': { '"logs"': { <body> } } }`.
     # python-hcl2 v8 wraps both the type and name keys in literal
     # quotes; strip them.
     type_quoted = next(iter(block))
@@ -580,10 +701,51 @@ def _parse_resource_file(path: Path) -> dict[str, Any] | None:
     inner = block[type_quoted]
     name_quoted = next(iter(inner))
     name = _strip_quotes(name_quoted)
-    raw_attrs = inner[name_quoted]
-    # Drop the `__is_block__` sentinel the lib emits.
-    attrs = {k: _normalize_value(v) for k, v in raw_attrs.items() if k != "__is_block__"}
-    return {"type": type_, "name": name, "attributes": attrs}
+    raw_body = inner[name_quoted]
+    attrs, blocks = _split_attrs_and_blocks(raw_body)
+    return {"type": type_, "name": name, "attributes": attrs, "blocks": blocks}
+
+
+def _split_attrs_and_blocks(
+    raw: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    """Walk a parsed HCL block body and partition it into leaf
+    attributes and nested blocks. Used by the resource parser to
+    surface the same `{attributes, blocks}` shape the writer
+    expects on POST.
+
+    Disambiguates a block from a map by python-hcl2's `__is_block__`
+    sentinel: a dict with that key is a single-instance nested block,
+    a list of such dicts is list/set-mode block instances, anything
+    else is a leaf attribute.
+    """
+    attrs: dict[str, Any] = {}
+    blocks: dict[str, list[dict[str, Any]]] = {}
+    for k, v in raw.items():
+        if k == "__is_block__":
+            continue
+        if isinstance(v, dict) and v.get("__is_block__") is True:
+            # Single-instance nested block.
+            inner_attrs, inner_blocks = _split_attrs_and_blocks(v)
+            blocks[k] = [{"attributes": inner_attrs, "blocks": inner_blocks}]
+        elif (
+            isinstance(v, list)
+            and v
+            and all(
+                isinstance(x, dict) and x.get("__is_block__") is True for x in v
+            )
+        ):
+            # List- or set-mode block: N instances.
+            instances: list[dict[str, Any]] = []
+            for x in v:
+                inner_attrs, inner_blocks = _split_attrs_and_blocks(x)
+                instances.append(
+                    {"attributes": inner_attrs, "blocks": inner_blocks}
+                )
+            blocks[k] = instances
+        else:
+            attrs[k] = _normalize_value(v)
+    return attrs, blocks
 
 
 def _strip_quotes(s: str) -> str:
