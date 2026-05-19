@@ -98,6 +98,8 @@ export function BlueprintCanvas({
   onRenameConsumed,
   reloadKey,
   onCanvasNodeDelete,
+  panToAddress,
+  onPanConsumed,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -115,6 +117,13 @@ export function BlueprintCanvas({
    *  so the disk-side delete + the visual removal stay consistent.
    *  Reject the promise to cancel the canvas removal. */
   onCanvasNodeDelete?: (node: BlueprintNode) => Promise<void>;
+  /** When set, the canvas pans + zooms onto the node whose
+   *  `<type>.<name>` address matches. Used by the drawer's reference
+   *  eye-icon — clicking it sets the address, the canvas finds the
+   *  matching node, centers on it, then acks via `onPanConsumed` so
+   *  the address can clear and not re-pan on every render. */
+  panToAddress?: string | null;
+  onPanConsumed?: () => void;
 }) {
   return (
     <ReactFlowProvider>
@@ -125,6 +134,8 @@ export function BlueprintCanvas({
         onRenameConsumed={onRenameConsumed}
         reloadKey={reloadKey}
         onCanvasNodeDelete={onCanvasNodeDelete}
+        panToAddress={panToAddress}
+        onPanConsumed={onPanConsumed}
       />
     </ReactFlowProvider>
   );
@@ -137,6 +148,8 @@ function CanvasInner({
   onRenameConsumed,
   reloadKey,
   onCanvasNodeDelete,
+  panToAddress,
+  onPanConsumed,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -144,13 +157,15 @@ function CanvasInner({
   onRenameConsumed?: () => void;
   reloadKey?: number;
   onCanvasNodeDelete?: (node: BlueprintNode) => Promise<void>;
+  panToAddress?: string | null;
+  onPanConsumed?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [nextNameByType, setNextNameByType] = useState<Record<string, number>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, setCenter } = useReactFlow();
 
   // Load existing resources from disk on mount and whenever the parent
   // bumps `reloadKey` (e.g., after a successful Save / Delete or after
@@ -326,6 +341,29 @@ function CanvasInner({
     );
     onRenameConsumed?.();
   }, [renameEvent, setNodes, onRenameConsumed]);
+
+  // Pan-and-zoom onto a node by `<type>.<name>` address. Triggered by
+  // the drawer's reference eye-icon — clicking it on a `vpc_id` field
+  // jumps the canvas to the VPC node and selects it. Centers using
+  // React Flow's `setCenter` with a slight zoom-in so the target
+  // stands out from neighbors; selection updates flow via the
+  // parent's `onSelectNode` so the drawer swaps to the new context.
+  useEffect(() => {
+    if (!panToAddress) return;
+    const target = nodes.find(
+      (n) => `${n.data.resourceType}.${n.data.name}` === panToAddress,
+    );
+    if (target) {
+      // Center on the node's middle. The 220×56 card sizing matches
+      // `autoLayoutNodes` so the offsets line up.
+      setCenter(target.position.x + 110, target.position.y + 28, {
+        zoom: 1.1,
+        duration: 350,
+      });
+      onSelectNode(target);
+    }
+    onPanConsumed?.();
+  }, [panToAddress, nodes, setCenter, onSelectNode, onPanConsumed]);
 
   // Drag-to-save: when React Flow finishes a node drag, the change
   // batch includes a position change with `dragging: false`. We pluck

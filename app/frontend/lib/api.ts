@@ -16,10 +16,14 @@ export async function fetchPlan(): Promise<PlanResponse> {
   return res.json();
 }
 
+export type PlanRoot = "default" | "blueprint";
+
 export async function fetchPlanDiff(
   signal?: AbortSignal,
+  root: PlanRoot = "default",
 ): Promise<PlanDiffResponse> {
-  const res = await fetch("/api/plan-diff", { cache: "no-store", signal });
+  const qs = `?root=${encodeURIComponent(root)}`;
+  const res = await fetch(`/api/plan-diff${qs}`, { cache: "no-store", signal });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/plan-diff failed (${res.status}): ${text}`);
