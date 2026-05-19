@@ -67,6 +67,11 @@ export type BlueprintNodeData = {
   /** Original on-disk filename when known. Used as a fallback target
    *  for Delete on parse-error nodes. */
   filename?: string;
+  /** Briefly true on nodes that just arrived from a reload (typically
+   *  the AI agent wrote HCL). The canvas pulses an amber ring around
+   *  them, then clears the flag after a short window so the cue
+   *  doesn't linger on the next interaction. */
+  justArrived?: boolean;
 } & Record<string, unknown>;  // index signature satisfies React Flow's Node constraint
 
 export type BlueprintNode = Node<BlueprintNodeData>;
@@ -135,29 +140,53 @@ function CanvasInner({
   const { screenToFlowPosition } = useReactFlow();
 
   // Load existing resources from disk on mount and whenever the parent
-  // bumps `reloadKey` (e.g., after a successful Save / Delete). The
-  // canvas reconciles server state with any client-only nodes the user
-  // dropped but hasn't saved yet — those keep their position; saved
-  // nodes get updated attributes + positions.
+  // bumps `reloadKey` (e.g., after a successful Save / Delete or after
+  // the chat agent's Edit/Write tool fires). The canvas reconciles
+  // server state with any client-only nodes the user dropped but
+  // hasn't saved yet — those keep their position; saved nodes get
+  // updated attributes + positions; newly-appeared nodes (typically
+  // AI-written) flash an amber ring.
   useEffect(() => {
     let cancelled = false;
     const ac = new AbortController();
+    let clearArrivalTimer: ReturnType<typeof setTimeout> | null = null;
+
     fetchBlueprintResources(ac.signal)
       .then((res) => {
         if (cancelled) return;
         setLoadError(null);
-        setNodes((prev) =>
-          reconcileNodes(prev, res.resources),
-        );
+        let newArrivalIds: string[] = [];
+        setNodes((prev) => {
+          const reconciled = reconcileNodes(prev, res.resources);
+          newArrivalIds = reconciled.newArrivals;
+          return reconciled.nodes;
+        });
         setEdges(buildEdges(res.edges));
+
+        // Clear the `justArrived` flag after ~2.5s so the pulse stops
+        // on its own. If the user reloads again before the timer fires,
+        // the next reconcile resets the flag anyway.
+        if (newArrivalIds.length > 0) {
+          clearArrivalTimer = setTimeout(() => {
+            setNodes((nds) =>
+              nds.map((n) =>
+                newArrivalIds.includes(n.id)
+                  ? { ...n, data: { ...n.data, justArrived: false } }
+                  : n,
+              ),
+            );
+          }, 2500);
+        }
       })
       .catch((e: Error) => {
         if (cancelled || e.name === "AbortError") return;
         setLoadError(e.message);
       });
+
     return () => {
       cancelled = true;
       ac.abort();
+      if (clearArrivalTimer !== null) clearTimeout(clearArrivalTimer);
     };
   }, [reloadKey, setNodes, setEdges]);
 
@@ -313,18 +342,20 @@ function CanvasInner({
  *     match) are preserved as-is — losing un-saved work on every
  *     reload would feel awful.
  *   - Server-side resources the canvas doesn't have yet (e.g., the AI
- *     agent created one via Write) are added as fresh nodes.
+ *     agent created one via Write) are added as fresh nodes with
+ *     `data.justArrived = true` so the visual highlight fires.
  */
 function reconcileNodes(
   existing: BlueprintNode[],
   server: BlueprintResource[],
-): BlueprintNode[] {
+): { nodes: BlueprintNode[]; newArrivals: string[] } {
   const serverByAddress = new Map(
     server.map((r) => [`${r.type}.${r.name}`, r]),
   );
   // Existing nodes that have a saved counterpart get a stable update.
   const merged: BlueprintNode[] = [];
   const consumed = new Set<string>();
+  const newArrivals: string[] = [];
 
   for (const n of existing) {
     const addr = `${n.data.resourceType}.${n.data.name}`;
@@ -339,13 +370,17 @@ function reconcileNodes(
     }
   }
   // Resources that exist on disk but the canvas didn't know about
-  // (e.g., produced by the AI agent's Edit tool) get added fresh.
+  // (e.g., produced by the AI agent's Edit tool) get added fresh
+  // and flagged so the node pulses an amber ring briefly.
   for (const r of server) {
     const addr = `${r.type}.${r.name}`;
     if (consumed.has(addr)) continue;
-    merged.push(serverNodeFrom(r));
+    const node = serverNodeFrom(r);
+    node.data = { ...node.data, justArrived: true };
+    merged.push(node);
+    newArrivals.push(node.id);
   }
-  return merged;
+  return { nodes: merged, newArrivals };
 }
 
 function serverNodeFrom(
@@ -434,13 +469,22 @@ function PaletteTile({ item }: { item: PaletteItem }) {
 function ResourceNode({ data, selected }: NodeProps<BlueprintNode>) {
   const meta = familyOf(data.resourceType);
   const classes = FAMILY_CLASSES[meta.family];
+  // `justArrived` pulses an amber ring on nodes that just appeared via
+  // a reload (typically: AI agent wrote HCL). Cleared by the canvas's
+  // load-effect after ~2.5s. The selected ring takes precedence when
+  // both are true so the user's active selection is never visually
+  // dominated by the arrival pulse.
+  const arrivalClasses =
+    data.justArrived && !selected
+      ? "ring-2 ring-amber-400 dark:ring-amber-500 animate-pulse"
+      : "";
   return (
     <div
       className={`relative flex items-center gap-2 px-2 py-1.5 rounded-sm bg-background border ${
         selected
           ? "border-accent ring-1 ring-accent"
           : "border-border hover:border-accent"
-      } shadow-sm transition-colors`}
+      } ${arrivalClasses} shadow-sm transition-colors`}
     >
       {/* React Flow needs explicit `Handle` components on a custom
           node so edge endpoints can attach somewhere. Both source and
