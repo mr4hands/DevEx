@@ -92,8 +92,18 @@ export default function Home() {
 
   const onToolResult = useCallback(() => {
     // Refresh on every tool result — agent may have mutated state.
-    // (Plan tab does not auto-refresh; user re-triggers via "run plan".)
+    //
+    // - `refreshKey` re-fetches the ResourceList (live state).
+    // - `blueprintReload` re-fetches the Blueprint canvas. The chat
+    //   agent's `Edit`/`Write` tools can land HCL in
+    //   `live/blueprint/resources/`; bumping this here is what makes
+    //   AI-placed resources show up on the canvas without manual
+    //   refresh — the whole point of the Blueprint AI integration.
+    // - Plan tab does NOT auto-refresh; `tofu plan` is slow and a
+    //   single agent turn often runs many tools. User re-triggers
+    //   explicitly via "run plan".
     setRefreshKey((k) => k + 1);
+    setBlueprintReload((k) => k + 1);
   }, []);
 
   // Index plan-diff changes by address for cheap lookups.

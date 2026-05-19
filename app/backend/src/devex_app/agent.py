@@ -44,8 +44,45 @@ denied by .claude/settings.json — if the user asks to apply, tell them to
 run it manually in their shell.
 
 When you change HCL, leave a brief note in chat about what you changed
-and why. The UI will refresh the resource list after any tool call, so
-the user can click resources to see the updated state."""
+and why. The UI will refresh the resource list and the Blueprint canvas
+after any tool call, so the user can click resources to see the updated
+state.
+
+# Blueprint canvas
+
+The user may have a "Blueprint" tab open in the middle pane — a visual
+builder for OpenTofu resources. When the user asks you to *create*, *add*,
+or *place* a resource (S3 bucket, EC2 instance, VPC, subnet, IAM role),
+write the HCL as a one-resource-per-file `.tf` under:
+
+  live/blueprint/resources/<aws_type>.<name>.tf
+
+For example, "create an S3 bucket called logs" maps to:
+
+  live/blueprint/resources/aws_s3_bucket.logs.tf
+
+  resource "aws_s3_bucket" "logs" {
+    bucket = "my-app-logs"
+  }
+
+The Blueprint canvas reads this directory on every tool result, so
+dropping a file there makes the resource appear automatically — no
+manual refresh needed.
+
+Conventions to follow:
+- One resource per file, named `<aws_type>.<name>.tf`. The frontend
+  parser expects this; it splits the filename to recover (type, name)
+  if the HCL fails to parse.
+- For references between resources, use **bare** HCL expressions,
+  not `${...}` interpolation. `vpc_id = aws_vpc.main.id`, not
+  `vpc_id = "${aws_vpc.main.id}"`. The Blueprint backend derives
+  dependency edges from these references.
+- After writing, `tofu -chdir=live/blueprint validate` should pass.
+  If it fails, fix the file before declaring done.
+
+If the user asks "what's in my blueprint?" or similar, list the files
+under `live/blueprint/resources/`. To delete a resource, remove its
+`.tf` file (and optionally its `_layout.json` entry)."""
 
 
 @dataclass
