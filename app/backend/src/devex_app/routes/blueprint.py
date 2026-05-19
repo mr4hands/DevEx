@@ -521,18 +521,67 @@ def _update_layout(
     the workspace restores the user's spatial arrangement. The file lives
     alongside the `resources/` dir so it's easy to spot but doesn't end
     up parsed by OpenTofu."""
-    import json
+    _merge_layout(
+        blueprint_root,
+        {
+            f"{type_}.{name}": {
+                "x": position.get("x", 0),
+                "y": position.get("y", 0),
+            }
+        },
+    )
 
+
+def _merge_layout(
+    blueprint_root: Path,
+    entries: dict[str, dict[str, float]],
+) -> None:
+    """Apply a batch of `<addr> → {x, y}` updates to `_layout.json`,
+    creating the file if missing. Used by both the single-resource
+    write path (POST) and the drag-to-save layout PATCH endpoint."""
     layout_path = blueprint_root / "_layout.json"
     if layout_path.exists():
-        layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        try:
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            layout = {}
     else:
         layout = {}
-    layout[f"{type_}.{name}"] = {"x": position.get("x", 0), "y": position.get("y", 0)}
+    for addr, pos in entries.items():
+        layout[addr] = {"x": pos.get("x", 0), "y": pos.get("y", 0)}
     layout_path.write_text(
         json.dumps(layout, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/blueprint/layout — drag-to-save canvas positions
+# ---------------------------------------------------------------------------
+
+
+class LayoutPatchRequest(BaseModel):
+    """Bulk update for `_layout.json`. The canvas calls this after the
+    user drags nodes; debounced client-side so a single drag interaction
+    produces one request, not one per pixel.
+
+    Keys in `positions` are `<type>.<name>` (matching the canvas's
+    node addresses). The endpoint is permissive about which resources
+    exist — entries for resources whose `.tf` files have since been
+    deleted are still persisted (harmless; the GET endpoint ignores
+    them when it doesn't find a matching file).
+    """
+
+    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+@router.patch("/blueprint/layout")
+def patch_layout(req: LayoutPatchRequest) -> dict[str, Any]:
+    if not req.positions:
+        return {"updated": 0}
+    settings = get_settings()
+    _merge_layout(settings.blueprint_root, req.positions)
+    return {"updated": len(req.positions)}
 
 
 # ---------------------------------------------------------------------------

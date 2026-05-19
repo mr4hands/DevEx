@@ -5,6 +5,7 @@ import {
   Controls,
   Handle,
   MarkerType,
+  Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -13,6 +14,7 @@ import {
   useReactFlow,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -26,7 +28,11 @@ import {
   type DragEvent,
 } from "react";
 
-import { fetchBlueprintResources } from "@/lib/api";
+import { fetchBlueprintResources, patchBlueprintLayout } from "@/lib/api";
+import {
+  autoLayoutNodes,
+  shouldAutoLayout,
+} from "@/lib/blueprintLayout";
 import {
   FAMILY_CLASSES,
   familyOf,
@@ -162,13 +168,44 @@ function CanvasInner({
       .then((res) => {
         if (cancelled) return;
         setLoadError(null);
+        const newEdges = buildEdges(res.edges);
         let newArrivalIds: string[] = [];
+        // Drives the post-setState side effect: when auto-layout
+        // fires we persist the computed positions to `_layout.json`
+        // so subsequent reloads don't re-run dagre and shift the
+        // user's mental map.
+        let layoutToPersist: Record<string, { x: number; y: number }> | null = null;
+
         setNodes((prev) => {
           const reconciled = reconcileNodes(prev, res.resources);
           newArrivalIds = reconciled.newArrivals;
+          if (shouldAutoLayout(reconciled.newArrivals, reconciled.nodes)) {
+            const laidOut = autoLayoutNodes(reconciled.nodes, newEdges);
+            // Only persist for nodes that exist on disk (server-id format).
+            // Un-saved drops don't have a layout key yet.
+            const positions: Record<string, { x: number; y: number }> = {};
+            for (const n of laidOut) {
+              const expectedId = `${n.data.resourceType}.${n.data.name}`;
+              if (n.id === expectedId) {
+                positions[expectedId] = n.position;
+              }
+            }
+            if (Object.keys(positions).length > 0) {
+              layoutToPersist = positions;
+            }
+            return laidOut;
+          }
           return reconciled.nodes;
         });
-        setEdges(buildEdges(res.edges));
+        setEdges(newEdges);
+
+        if (layoutToPersist) {
+          void patchBlueprintLayout(layoutToPersist).catch(() => {
+            // Layout persistence is best-effort. If it fails (offline,
+            // permissions, etc.), the canvas state is still correct;
+            // the next reload will just re-run auto-layout.
+          });
+        }
 
         // Clear the `justArrived` flag after ~2.5s so the pulse stops
         // on its own. If the user reloads again before the timer fires,
@@ -290,6 +327,81 @@ function CanvasInner({
     onRenameConsumed?.();
   }, [renameEvent, setNodes, onRenameConsumed]);
 
+  // Drag-to-save: when React Flow finishes a node drag, the change
+  // batch includes a position change with `dragging: false`. We pluck
+  // those out, debounce 400ms (so a long drag is one PATCH), and
+  // ship the new positions to `_layout.json` via the layout endpoint.
+  // The HCL file is untouched — only the sidecar moves.
+  const pendingPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const positionFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPendingPositions = useCallback(() => {
+    const positions = pendingPositionsRef.current;
+    pendingPositionsRef.current = {};
+    positionFlushTimerRef.current = null;
+    if (Object.keys(positions).length === 0) return;
+    void patchBlueprintLayout(positions).catch(() => {
+      // Best-effort: a failed PATCH just means the position will be
+      // recomputed on next reload (or re-saved on the next drag).
+    });
+  }, []);
+
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<BlueprintNode>[]) => {
+      // Always let React Flow's internal state update — that's the
+      // visual feedback during the drag.
+      onNodesChange(changes);
+      // Collect post-drag positions for nodes that actually exist on
+      // disk (server-id format `<type>.<name>`). Un-saved drops don't
+      // have a layout entry to update.
+      for (const ch of changes) {
+        if (ch.type !== "position") continue;
+        if (ch.dragging) continue; // still mid-drag; wait for the end
+        if (!ch.position) continue;
+        const node = nodes.find((n) => n.id === ch.id);
+        if (!node) continue;
+        const expectedId = `${node.data.resourceType}.${node.data.name}`;
+        if (node.id !== expectedId) continue;
+        pendingPositionsRef.current[expectedId] = ch.position;
+      }
+      if (Object.keys(pendingPositionsRef.current).length === 0) return;
+      if (positionFlushTimerRef.current !== null) {
+        clearTimeout(positionFlushTimerRef.current);
+      }
+      positionFlushTimerRef.current = setTimeout(flushPendingPositions, 400);
+    },
+    [onNodesChange, nodes, flushPendingPositions],
+  );
+
+  // On unmount, fire any pending PATCH so a drag-then-tab-switch
+  // doesn't drop the unsent move.
+  useEffect(
+    () => () => {
+      if (positionFlushTimerRef.current !== null) {
+        clearTimeout(positionFlushTimerRef.current);
+        flushPendingPositions();
+      }
+    },
+    [flushPendingPositions],
+  );
+
+  // Manual auto-layout — runs on demand when the user clicks the
+  // "Layout" button. Persists the result to `_layout.json` so reloads
+  // don't re-run dagre.
+  const runManualLayout = useCallback(() => {
+    if (nodes.length === 0) return;
+    const laidOut = autoLayoutNodes(nodes, edges);
+    setNodes(laidOut);
+    const positions: Record<string, { x: number; y: number }> = {};
+    for (const n of laidOut) {
+      const expectedId = `${n.data.resourceType}.${n.data.name}`;
+      if (n.id === expectedId) positions[expectedId] = n.position;
+    }
+    if (Object.keys(positions).length > 0) {
+      void patchBlueprintLayout(positions).catch(() => {});
+    }
+  }, [nodes, edges, setNodes]);
+
   // Reflect external selection (e.g., parent clears) onto the canvas.
   const nodesWithSelection = useMemo(
     () =>
@@ -307,7 +419,7 @@ function CanvasInner({
         <ReactFlow
           nodes={nodesWithSelection}
           edges={edges}
-          onNodesChange={onNodesChange}
+          onNodesChange={handleNodesChange}
           onEdgesChange={onEdgesChange}
           onDragOver={onDragOver}
           onDrop={onDrop}
@@ -320,6 +432,20 @@ function CanvasInner({
         >
           <Background />
           <Controls position="bottom-right" />
+          <Panel
+            position="top-right"
+            className="!m-2 flex items-center gap-1"
+          >
+            <button
+              type="button"
+              onClick={runManualLayout}
+              disabled={nodes.length === 0}
+              title="Auto-arrange nodes with Dagre (LR dependency layout)"
+              className="px-1.5 h-6 text-[10px] font-mono rounded-sm border border-border bg-background hover:bg-muted text-foreground transition-colors disabled:opacity-50"
+            >
+              auto-layout
+            </button>
+          </Panel>
         </ReactFlow>
         {loadError && (
           <div className="absolute top-3 left-3 right-3 text-[11px] font-mono rounded-sm border border-red-200 dark:border-red-900 px-3 py-2 text-red-600 dark:text-red-400 bg-background/95 whitespace-pre-wrap">
