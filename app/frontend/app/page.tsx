@@ -17,6 +17,32 @@ import type { PlanDiffResponse, Resource, ResourceChange } from "@/lib/types";
 
 type MiddleTab = "list" | "plan" | "blueprint";
 
+// Prompt seeded into the chat by the Blueprint "commit to PR" button.
+// The agent has the repo + Bash + the opentofu-* skills, so it can do
+// the cleanup + git + PR itself. Kept terse but explicit about the
+// non-negotiables: promote to a module, don't commit the bp.* sandbox
+// files, don't apply, report the PR URL.
+const BLUEPRINT_COMMIT_PROMPT = `Promote the current blueprint into a reviewable PR.
+
+The Blueprint canvas authored resources as sandbox files at the root of
+\`live/blueprint/\`, named \`bp.<type>.<name>.tf\`. Please:
+
+1. Read every \`live/blueprint/bp.*.tf\` to understand the resources and
+   their relationships (references between them are dependency edges).
+2. Extract them into a clean, reusable module under \`modules/<name>/\`,
+   following the opentofu-style-guide skill: proper file layout
+   (versions.tf / variables.tf / main.tf / outputs.tf), typed +
+   described variables for anything that should be caller-configurable,
+   described outputs, and a day-one \`tests/plan.tftest.hcl\`.
+3. Wire the module into an appropriate live root config with sensible
+   inputs.
+4. Run \`tofu fmt\` and \`tofu validate\` until clean.
+5. Create a branch, commit (do NOT commit the \`bp.*.tf\` sandbox files
+   or \`_layout.json\`), push, and open a PR with \`gh pr create --fill\`.
+6. Report the PR URL back here.
+
+Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
+
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -40,6 +66,14 @@ export default function Home() {
   // the eye next to `vpc_id = aws_vpc.main.id`, we set this to
   // `aws_vpc.main` and the canvas pans + selects the matching node.
   const [blueprintPanTo, setBlueprintPanTo] = useState<string | null>(null);
+  // Set by the "commit to PR" button — the ChatPanel auto-sends this
+  // as a user message, driving the agent to promote the blueprint.
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
+
+  // Seed the agent with a promote-to-PR prompt and reveal the chat.
+  const handleCommitToPR = useCallback(() => {
+    setPendingPrompt(BLUEPRINT_COMMIT_PROMPT);
+  }, []);
 
   // Shared "delete a canvas node" handler — the canvas calls it from
   // React Flow's Backspace/Delete gesture; the drawer's Delete button
@@ -161,6 +195,8 @@ export default function Home() {
           onToolResult={onToolResult}
           contextResource={selected}
           onClearContext={() => setSelected(null)}
+          pendingPrompt={pendingPrompt}
+          onPendingConsumed={() => setPendingPrompt(null)}
         />
       </aside>
       <section className="flex-1 min-w-0 flex flex-col min-h-0">
@@ -194,6 +230,7 @@ export default function Home() {
             onCanvasNodeDelete={handleBlueprintDelete}
             panToAddress={blueprintPanTo}
             onPanConsumed={() => setBlueprintPanTo(null)}
+            onCommitToPR={handleCommitToPR}
           />
         )}
       </section>
