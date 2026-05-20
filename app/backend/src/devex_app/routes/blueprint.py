@@ -59,6 +59,16 @@ AWS_PROVIDER_KEYS = (
 )
 
 
+def _type_meta(type_: str) -> dict[str, str]:
+    """Cosmetic label + family for a type. Curated entries win; anything
+    else gets a humanized label and the generic "other" family so the
+    canvas can still render adopted resources of any type."""
+    if type_ in SUPPORTED_TYPES:
+        return SUPPORTED_TYPES[type_]
+    leaf = type_.removeprefix("aws_").replace("_", " ")
+    return {"label": leaf or type_, "family": "other"}
+
+
 @router.get("/schemas")
 def schemas(
     types: list[str] = Query(default=None),
@@ -74,13 +84,14 @@ def schemas(
     settings = get_settings()
     requested = list(types) if types else list(SUPPORTED_TYPES.keys())
 
-    # Reject unknown types up-front rather than 500'ing later when the
-    # schema lookup misses.
-    unknown = [t for t in requested if t not in SUPPORTED_TYPES]
-    if unknown:
+    # Format-only validation — any valid resource-type identifier is
+    # allowed now (existing-resource adoption can surface any type). Types
+    # missing from the provider schema are simply skipped in the loop below.
+    bad = [t for t in requested if not _DELETE_TYPE_RE.match(t)]
+    if bad:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported resource types: {', '.join(unknown)}",
+            detail=f"Malformed resource type identifiers: {', '.join(bad)}",
         )
 
     try:
@@ -106,7 +117,7 @@ def schemas(
 
     out: dict[str, Any] = {}
     for t in requested:
-        meta = SUPPORTED_TYPES[t]
+        meta = _type_meta(t)
         resource_schema = resources_block.get(t)
         if resource_schema is None:
             # The provider exists but doesn't have this resource type.
