@@ -261,6 +261,12 @@ class ResourceWriteRequest(BaseModel):
 
     type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
     name: str = Field(..., description="HCL block label, e.g. 'logs'")
+    import_id: str | None = Field(
+        default=None,
+        description="Real cloud id. When set, an `import { to, id }` block is "
+        "emitted above the resource so OpenTofu adopts the existing resource "
+        "instead of creating a new one.",
+    )
     attributes: dict[str, Any] = Field(default_factory=dict)
     blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
     position: dict[str, float] | None = Field(
@@ -271,11 +277,14 @@ class ResourceWriteRequest(BaseModel):
 
     @field_validator("type")
     @classmethod
-    def _type_supported(cls, v: str) -> str:
-        if v not in SUPPORTED_TYPES:
+    def _type_valid(cls, v: str) -> str:
+        # Format-only — adoption of existing resources can surface any
+        # type, so we no longer gate writes to SUPPORTED_TYPES. The
+        # supported list still drives the palette + cosmetics.
+        if not _DELETE_TYPE_RE.match(v):
             raise ValueError(
-                f"Unsupported resource type {v!r}. "
-                f"Supported: {', '.join(SUPPORTED_TYPES)}"
+                f"Invalid resource type identifier {v!r}. "
+                "Must look like aws_s3_bucket."
             )
         return v
 
@@ -311,12 +320,20 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
     # subdirectories.
     filename = f"bp.{req.type}.{req.name}.tf"
     path = settings.blueprint_root / filename
-    hcl = _render_resource_block(
+    resource_hcl = _render_resource_block(
         req.type,
         req.name,
         req.attributes,
         req.blocks,
     )
+    if req.import_id:
+        hcl = (
+            _render_import_block(req.type, req.name, req.import_id)
+            + "\n"
+            + resource_hcl
+        )
+    else:
+        hcl = resource_hcl
     # Use a temp-write + rename so an interrupted write can't leave a
     # half-formed `.tf` that `tofu validate` would choke on.
     tmp = path.with_suffix(".tf.tmp")
@@ -334,6 +351,15 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
         else str(path),
         "hcl": hcl,
     }
+
+
+def _render_import_block(type_: str, name: str, import_id: str) -> str:
+    """Render an `import { to, id }` block. `to` is a bare resource
+    address; `id` is a quoted, escaped literal. Emitted above the
+    resource so OpenTofu adopts an existing resource instead of creating
+    a duplicate."""
+    escaped = import_id.replace("\\", "\\\\").replace('"', '\\"')
+    return f'import {{\n  to = {type_}.{name}\n  id = "{escaped}"\n}}\n'
 
 
 def _render_resource_block(
