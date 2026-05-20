@@ -19,6 +19,16 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN",
         "ghcr.io/github/github-mcp-server:v1.0.4"
       ]
+    },
+    "awslabs.aws-api-mcp-server": {
+      "command": "uvx",
+      "args": [
+        "awslabs.aws-api-mcp-server@latest"
+      ],
+      "env": {
+        "READ_OPERATIONS_ONLY": "true",
+        "AWS_REGION": "us-east-1"
+      }
     }
   }
 }
