@@ -6,9 +6,12 @@ terraform.tfstate.backup
 .terraform.lock.hcl
 
 # Canvas-generated artifacts: each resource the Blueprint UI saves
-# lives as its own file under `resources/`, and canvas positions are
-# stored in `_layout.json`. These are per-session/experiment, not
+# lives as `bp.<type>.<name>.tf` at the workspace root (root-only so
+# OpenTofu's loader sees it — subdirs are ignored). Canvas positions
+# are stored in `_layout.json`. These are per-session/experiment, not
 # repo-source; promote a resource to the canonical layout (`main.tf`
 # or a module) when ready and the canvas writes become safe to delete.
-resources/
+bp.*.tf
 _layout.json
+# Legacy pre-flat layout (migrated to bp.*.tf on first list).
+resources/

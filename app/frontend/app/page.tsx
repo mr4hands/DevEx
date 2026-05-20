@@ -8,7 +8,11 @@ import { ChatPanel } from "@/components/ChatPanel";
 import { PlanDiff } from "@/components/PlanDiff";
 import { ResourceDrawer } from "@/components/ResourceDrawer";
 import { ResourceList } from "@/components/ResourceList";
-import { deleteBlueprintResource, fetchPlanDiff } from "@/lib/api";
+import {
+  deleteBlueprintResource,
+  fetchPlanDiff,
+  type PlanRoot,
+} from "@/lib/api";
 import type { PlanDiffResponse, Resource, ResourceChange } from "@/lib/types";
 
 type MiddleTab = "list" | "plan" | "blueprint";
@@ -32,6 +36,10 @@ export default function Home() {
   // canvas refetches the server-side resources + edges. Phase 3's
   // round-trip flows through this signal.
   const [blueprintReload, setBlueprintReload] = useState(0);
+  // Target for the drawer's reference eye-icon: when the user clicks
+  // the eye next to `vpc_id = aws_vpc.main.id`, we set this to
+  // `aws_vpc.main` and the canvas pans + selects the matching node.
+  const [blueprintPanTo, setBlueprintPanTo] = useState<string | null>(null);
 
   // Shared "delete a canvas node" handler — the canvas calls it from
   // React Flow's Backspace/Delete gesture; the drawer's Delete button
@@ -61,6 +69,11 @@ export default function Home() {
   // When the user clicks "open in PlanDiff" from the drawer, we route
   // them to the Plan tab + expand that row.
   const [planFocusAddress, setPlanFocusAddress] = useState<string | null>(null);
+  // Which workspace the Plan tab is currently looking at. The
+  // ResourceList (pending indicators) follows whatever's set here so
+  // the two views stay in sync; flipping to "blueprint" surfaces the
+  // canvas's `live/blueprint/` workspace in both places.
+  const [planRoot, setPlanRoot] = useState<PlanRoot>("default");
   const planAbortRef = useRef<AbortController | null>(null);
 
   const runPlan = useCallback(async () => {
@@ -70,7 +83,7 @@ export default function Home() {
     setPlanLoading(true);
     setPlanError(null);
     try {
-      setPlanDiff(await fetchPlanDiff(ac.signal));
+      setPlanDiff(await fetchPlanDiff(ac.signal, planRoot));
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       setPlanError((e as Error).message);
@@ -80,10 +93,11 @@ export default function Home() {
         planAbortRef.current = null;
       }
     }
-  }, []);
+  }, [planRoot]);
 
-  // Run an initial plan on mount so pending indicators are populated
-  // before the user has to click anything.
+  // Run an initial plan on mount + whenever the workspace selector
+  // changes, so flipping to "blueprint" actually fetches a blueprint
+  // plan rather than waiting for the user to hit "run plan".
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void runPlan();
@@ -166,6 +180,8 @@ export default function Home() {
             error={planError}
             onRunPlan={runPlan}
             focusAddress={planFocusAddress}
+            root={planRoot}
+            onRootChange={setPlanRoot}
           />
         )}
         {middleTab === "blueprint" && (
@@ -176,6 +192,8 @@ export default function Home() {
             onRenameConsumed={() => setBlueprintRename(null)}
             reloadKey={blueprintReload}
             onCanvasNodeDelete={handleBlueprintDelete}
+            panToAddress={blueprintPanTo}
+            onPanConsumed={() => setBlueprintPanTo(null)}
           />
         )}
       </section>
@@ -199,6 +217,7 @@ export default function Home() {
               );
               setBlueprintReload((k) => k + 1);
             }}
+            onNavigateToRef={setBlueprintPanTo}
           />
         ) : (
           <ResourceDrawer

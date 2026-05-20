@@ -49,6 +49,7 @@ export function BlueprintNodeDrawer({
   onRename,
   onResourceWritten,
   onResourceDeleted,
+  onNavigateToRef,
 }: {
   node: BlueprintNode | null;
   onClose: () => void;
@@ -59,6 +60,10 @@ export function BlueprintNodeDrawer({
    *  the canvas's `reloadKey` and re-fetch from disk. */
   onResourceWritten?: () => void;
   onResourceDeleted?: (nodeId: string) => void;
+  /** Click handler for the reference-eye icon: jumps the canvas to
+   *  another resource's node and selects it. The parent maps
+   *  `<type>.<name>` → canvas node and pans React Flow into view. */
+  onNavigateToRef?: (targetAddress: string) => void;
 }) {
   const [schema, setSchema] = useState<ResourceSchema | null>(null);
   const [loading, setLoading] = useState(false);
@@ -376,6 +381,7 @@ export function BlueprintNodeDrawer({
                       attr={a}
                       value={formState.attrs[a.name]}
                       onChange={(v) => setAttr(a.name, v)}
+                      onNavigateToRef={onNavigateToRef}
                     />
                   ))}
                 </div>
@@ -419,6 +425,7 @@ export function BlueprintNodeDrawer({
                           attr={a}
                           value={formState.attrs[a.name]}
                           onChange={(v) => setAttr(a.name, v)}
+                          onNavigateToRef={onNavigateToRef}
                         />
                       ))
                     )}
@@ -441,6 +448,7 @@ export function BlueprintNodeDrawer({
                     onChange={(next) =>
                       setBlocks({ ...formState.blocks, [bt.name]: next })
                     }
+                    onNavigateToRef={onNavigateToRef}
                   />
                 ))}
               </section>
@@ -554,16 +562,38 @@ function FieldRow({
   );
 }
 
+/** When an attribute's string value looks like a reference to another
+ *  canvas resource (`aws_x.y.z`, possibly wrapped in `${...}`),
+ *  returns the target address `aws_x.y`. Used to render the eye-icon
+ *  navigator alongside reference fields. Mirrors the backend's
+ *  `_REF_PREFIX_RE` so the UI and writer agree on what counts. */
+const _REF_NAV_RE =
+  /^(aws_[a-z][a-z0-9_]+)\.([a-zA-Z_][a-zA-Z0-9_]*)(?:\.|$)/;
+
+function parseReferenceTarget(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  let v = value.trim();
+  if (v.startsWith("${") && v.endsWith("}")) v = v.slice(2, -1).trim();
+  const m = _REF_NAV_RE.exec(v);
+  return m ? `${m[1]}.${m[2]}` : null;
+}
+
 function AttrInput({
   attr,
   value,
   onChange,
+  onNavigateToRef,
 }: {
   attr: ResourceAttribute;
   value: unknown;
   onChange: (v: unknown) => void;
+  /** When set, reference-shaped string values render with an eye icon
+   *  that jumps the canvas to the referenced node. Lifted via the
+   *  drawer's prop chain from `page.tsx`. */
+  onNavigateToRef?: (targetAddress: string) => void;
 }) {
   const kind = attrKind(attr.type);
+  const refTarget = parseReferenceTarget(value);
   return (
     <FieldRow
       label={attr.name}
@@ -573,75 +603,107 @@ function AttrInput({
       }
       required={attr.required}
     >
-      {kind === "bool" && (
-        <select
-          className="text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent"
-          value={String(value ?? "")}
-          onChange={(e) => {
-            const v = e.target.value;
-            onChange(v === "" ? undefined : v === "true");
-          }}
-        >
-          <option value="">(unset)</option>
-          <option value="false">false</option>
-          <option value="true">true</option>
-        </select>
-      )}
-      {kind === "number" && (
-        <input
-          type="number"
-          className="w-full text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent"
-          value={value === undefined || value === null ? "" : String(value)}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === "") onChange(undefined);
-            else {
-              const n = Number(raw);
-              onChange(Number.isNaN(n) ? raw : n);
+      <div className="flex items-stretch gap-1">
+        {kind === "bool" && (
+          <select
+            className="text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent"
+            value={String(value ?? "")}
+            onChange={(e) => {
+              const v = e.target.value;
+              onChange(v === "" ? undefined : v === "true");
+            }}
+          >
+            <option value="">(unset)</option>
+            <option value="false">false</option>
+            <option value="true">true</option>
+          </select>
+        )}
+        {kind === "number" && (
+          <input
+            type="number"
+            className="w-full text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent"
+            value={value === undefined || value === null ? "" : String(value)}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") onChange(undefined);
+              else {
+                const n = Number(raw);
+                onChange(Number.isNaN(n) ? raw : n);
+              }
+            }}
+            placeholder={attr.required ? "" : "(unset)"}
+          />
+        )}
+        {kind === "complex" && (
+          <textarea
+            className="w-full text-[11px] font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent resize-y min-h-[44px]"
+            value={
+              value === undefined || value === null
+                ? ""
+                : typeof value === "string"
+                  ? value
+                  : JSON.stringify(value)
             }
-          }}
-          placeholder={attr.required ? "" : "(unset)"}
-        />
-      )}
-      {kind === "complex" && (
-        <textarea
-          className="w-full text-[11px] font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent resize-y min-h-[44px]"
-          value={
-            value === undefined || value === null
-              ? ""
-              : typeof value === "string"
-                ? value
-                : JSON.stringify(value)
-          }
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === "") {
-              onChange(undefined);
-              return;
-            }
-            // Try JSON-parse for collection types; fall back to raw
-            // string so the user can type partial HCL while typing.
-            try {
-              onChange(JSON.parse(raw));
-            } catch {
-              onChange(raw);
-            }
-          }}
-          placeholder='JSON, e.g. ["a","b"] or {"k":"v"}'
-        />
-      )}
-      {kind === "string" && (
-        <input
-          type={attr.sensitive ? "password" : "text"}
-          className="w-full text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent placeholder:text-muted-foreground/70"
-          value={value === undefined || value === null ? "" : String(value)}
-          onChange={(e) => {
-            const raw = e.target.value;
-            onChange(raw === "" ? undefined : raw);
-          }}
-          placeholder={attr.required ? "" : "(unset)"}
-        />
-      )}
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === "") {
+                onChange(undefined);
+                return;
+              }
+              try {
+                onChange(JSON.parse(raw));
+              } catch {
+                onChange(raw);
+              }
+            }}
+            placeholder='JSON, e.g. ["a","b"] or {"k":"v"}'
+          />
+        )}
+        {kind === "string" && (
+          <input
+            type={attr.sensitive ? "password" : "text"}
+            className="w-full text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent placeholder:text-muted-foreground/70"
+            value={value === undefined || value === null ? "" : String(value)}
+            onChange={(e) => {
+              const raw = e.target.value;
+              onChange(raw === "" ? undefined : raw);
+            }}
+            placeholder={attr.required ? "" : "(unset)"}
+          />
+        )}
+        {refTarget && onNavigateToRef && (
+          <button
+            type="button"
+            onClick={() => onNavigateToRef(refTarget)}
+            aria-label={`Open ${refTarget} on the canvas`}
+            title={`Open ${refTarget} on the canvas`}
+            className="shrink-0 inline-flex items-center justify-center w-7 px-1 border border-border bg-background hover:bg-muted hover:border-accent text-muted-foreground hover:text-foreground rounded-sm transition-colors"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="12"
+              height="12"
+              viewBox="0 0 14 14"
+              fill="none"
+            >
+              <path
+                d="M1 7s2-4 6-4 6 4 6 4-2 4-6 4-6-4-6-4z"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                fill="none"
+              />
+              <circle
+                cx="7"
+                cy="7"
+                r="1.7"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                fill="none"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
     </FieldRow>
   );
 }
@@ -680,11 +742,13 @@ function BlockEditor({
   instances,
   onChange,
   depth = 0,
+  onNavigateToRef,
 }: {
   blockType: ResourceBlockType;
   instances: BlueprintBlockInstance[];
   onChange: (next: BlueprintBlockInstance[]) => void;
   depth?: number;
+  onNavigateToRef?: (targetAddress: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const canAdd =
@@ -750,6 +814,7 @@ function BlockEditor({
               onRemove={() => removeAt(i)}
               instanceIndex={i}
               isOnlyInstance={instances.length === 1}
+              onNavigateToRef={onNavigateToRef}
             />
           ))}
           {canAdd && !atMax && (
@@ -781,6 +846,7 @@ function BlockInstanceEditor({
   onRemove,
   instanceIndex,
   isOnlyInstance,
+  onNavigateToRef,
 }: {
   instance: BlueprintBlockInstance;
   blockType: ResourceBlockType;
@@ -789,6 +855,7 @@ function BlockInstanceEditor({
   onRemove: () => void;
   instanceIndex: number;
   isOnlyInstance: boolean;
+  onNavigateToRef?: (targetAddress: string) => void;
 }) {
   const setAttr = (name: string, value: unknown) =>
     onUpdate({ attributes: { ...instance.attributes, [name]: value } });
@@ -836,6 +903,7 @@ function BlockInstanceEditor({
             attr={a}
             value={instance.attributes[a.name]}
             onChange={(v) => setAttr(a.name, v)}
+            onNavigateToRef={onNavigateToRef}
           />
         ))}
         {optionalAttrs.map((a) => (
@@ -844,6 +912,7 @@ function BlockInstanceEditor({
             attr={a}
             value={instance.attributes[a.name]}
             onChange={(v) => setAttr(a.name, v)}
+            onNavigateToRef={onNavigateToRef}
           />
         ))}
       </div>
@@ -856,6 +925,7 @@ function BlockInstanceEditor({
               instances={instance.blocks[bt.name] ?? []}
               onChange={(next) => setNestedBlocks(bt.name, next)}
               depth={depth + 1}
+              onNavigateToRef={onNavigateToRef}
             />
           ))}
         </div>

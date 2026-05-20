@@ -6,20 +6,19 @@ right edits the resource's attributes. The HCL the canvas writes
 lives in the workspace pointed at by `settings.blueprint_root`
 (default: `live/blueprint/`).
 
-This module owns:
-- `GET /api/schemas` — returns the provider schema for the supported
-  resource types so the form can render the right fields.
-- `POST /api/blueprint/resource` — writes a single resource block as
-  its own file under `<blueprint_root>/resources/`. Idempotent on
-  `(type, name)` — re-posting overwrites the file. One file per
-  resource so re-reading the canvas state in a future phase is just
-  a directory listing, no HCL parsing required.
+Generated files use a `bp.<type>.<name>.tf` naming convention and
+live at the workspace root (not in a subdirectory). The root-only
+placement is mandatory: OpenTofu's root-module loader doesn't recurse,
+so files in a `resources/` subdir are silently invisible to `tofu plan`.
+The `bp.` prefix keeps them visually distinct from hand-authored
+files (`main.tf`, `versions.tf`, etc.) and easy to gitignore.
 
-Future phases will add:
-- `GET /api/blueprint/resources` — canvas state from the resources/
-  directory (file listing + parsed attribute snapshots).
-- `DELETE /api/blueprint/resource/{type}/{name}` — removes a resource.
-- Dependency edge derivation from inter-resource references.
+Routes:
+- `GET /api/schemas` — provider schema for the supported types.
+- `POST /api/blueprint/resource` — writes one resource per file.
+- `GET /api/blueprint/resources` — canvas state (nodes + edges).
+- `DELETE /api/blueprint/resource/{type}/{name}` — removes a file.
+- `PATCH /api/blueprint/layout` — drag-to-save canvas positions.
 """
 
 from __future__ import annotations
@@ -292,11 +291,15 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
     overwrites; the file is the source of truth.
     """
     settings = get_settings()
-    resources_dir = settings.blueprint_root / "resources"
-    resources_dir.mkdir(parents=True, exist_ok=True)
+    settings.blueprint_root.mkdir(parents=True, exist_ok=True)
 
-    filename = f"{req.type}.{req.name}.tf"
-    path = resources_dir / filename
+    # `bp.` prefix keeps generated files visually distinct from the
+    # workspace's own `main.tf` / `versions.tf` / etc., and lets the
+    # list + delete paths filter cleanly. Files MUST live at the
+    # workspace root — OpenTofu's loader doesn't recurse into
+    # subdirectories.
+    filename = f"bp.{req.type}.{req.name}.tf"
+    path = settings.blueprint_root / filename
     hcl = _render_resource_block(
         req.type,
         req.name,
@@ -521,18 +524,67 @@ def _update_layout(
     the workspace restores the user's spatial arrangement. The file lives
     alongside the `resources/` dir so it's easy to spot but doesn't end
     up parsed by OpenTofu."""
-    import json
+    _merge_layout(
+        blueprint_root,
+        {
+            f"{type_}.{name}": {
+                "x": position.get("x", 0),
+                "y": position.get("y", 0),
+            }
+        },
+    )
 
+
+def _merge_layout(
+    blueprint_root: Path,
+    entries: dict[str, dict[str, float]],
+) -> None:
+    """Apply a batch of `<addr> → {x, y}` updates to `_layout.json`,
+    creating the file if missing. Used by both the single-resource
+    write path (POST) and the drag-to-save layout PATCH endpoint."""
     layout_path = blueprint_root / "_layout.json"
     if layout_path.exists():
-        layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        try:
+            layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            layout = {}
     else:
         layout = {}
-    layout[f"{type_}.{name}"] = {"x": position.get("x", 0), "y": position.get("y", 0)}
+    for addr, pos in entries.items():
+        layout[addr] = {"x": pos.get("x", 0), "y": pos.get("y", 0)}
     layout_path.write_text(
         json.dumps(layout, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/blueprint/layout — drag-to-save canvas positions
+# ---------------------------------------------------------------------------
+
+
+class LayoutPatchRequest(BaseModel):
+    """Bulk update for `_layout.json`. The canvas calls this after the
+    user drags nodes; debounced client-side so a single drag interaction
+    produces one request, not one per pixel.
+
+    Keys in `positions` are `<type>.<name>` (matching the canvas's
+    node addresses). The endpoint is permissive about which resources
+    exist — entries for resources whose `.tf` files have since been
+    deleted are still persisted (harmless; the GET endpoint ignores
+    them when it doesn't find a matching file).
+    """
+
+    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+@router.patch("/blueprint/layout")
+def patch_layout(req: LayoutPatchRequest) -> dict[str, Any]:
+    if not req.positions:
+        return {"updated": 0}
+    settings = get_settings()
+    _merge_layout(settings.blueprint_root, req.positions)
+    return {"updated": len(req.positions)}
 
 
 # ---------------------------------------------------------------------------
@@ -548,21 +600,23 @@ _REF_RE = re.compile(r"\$\{(aws_[a-zA-Z0-9_]+)\.([a-zA-Z_][a-zA-Z0-9_]*)(?:\.|})
 
 @router.get("/blueprint/resources")
 def list_resources() -> dict[str, Any]:
-    """Reads every `*.tf` file under the blueprint workspace's
-    `resources/` dir + the sidecar `_layout.json` and returns the
-    canvas state.
+    """Reads every `bp.*.tf` file at the blueprint workspace root +
+    the sidecar `_layout.json` and returns the canvas state.
 
     Each resource is one node; edges are derived from HCL references
     found in attribute values (e.g. `vpc_id = aws_vpc.main.id` ties
     the subnet to the VPC). Resources written by the AI agent through
-    its `Edit`/`Write` tools land in the same dir and flow through
-    this endpoint just like the canvas's own writes.
+    its `Edit`/`Write` tools land at the workspace root and flow
+    through this endpoint just like the canvas's own writes.
     """
     settings = get_settings()
-    resources_dir = settings.blueprint_root / "resources"
+    # One-time migration of the old `resources/<type>.<name>.tf` layout
+    # to the flat `bp.<type>.<name>.tf` root layout. Idempotent.
+    _migrate_legacy_resources(settings.blueprint_root)
+
     layout_path = settings.blueprint_root / "_layout.json"
 
-    if not resources_dir.exists():
+    if not settings.blueprint_root.exists():
         return {
             "blueprint_root": str(settings.blueprint_root),
             "resources": [],
@@ -581,14 +635,14 @@ def list_resources() -> dict[str, Any]:
     resources: list[dict[str, Any]] = []
     refs: list[tuple[str, str]] = []  # (source_address, target_address)
 
-    for path in sorted(resources_dir.glob("*.tf")):
+    for path in sorted(settings.blueprint_root.glob("bp.*.tf")):
         try:
             parsed = _parse_resource_file(path)
         except (ValueError, Exception) as exc:  # noqa: BLE001
             # A malformed file shouldn't take down the whole canvas.
             # Emit a placeholder node with type+name recovered from the
-            # filename (we wrote it ourselves as `<type>.<name>.tf`) so
-            # the user can still click Delete on it. Falls back to a
+            # filename (we wrote it ourselves as `bp.<type>.<name>.tf`)
+            # so the user can still click Delete on it. Falls back to a
             # synthetic placeholder pair if the filename doesn't match.
             type_guess, name_guess = _split_filename(path.stem)
             resources.append(
@@ -659,20 +713,48 @@ def list_resources() -> dict[str, Any]:
 
 
 def _split_filename(stem: str) -> tuple[str, str]:
-    """Split `<type>.<name>` (with no `.tf` extension) into the
+    """Split a `bp.<type>.<name>` file stem (no `.tf`) into the
     `(type, name)` pair the canvas uses. Used by the parse-error
     fallback so a malformed file still renders as a node the user can
     Delete.
 
-    Returns `("unknown", stem)` if the filename doesn't match the
-    convention; both halves still pass the relaxed identifier checks
-    used by the DELETE endpoint, so the broken-file flow keeps
-    working."""
-    if "." in stem:
-        type_, _, name = stem.partition(".")
+    Tolerates a missing `bp.` prefix (older files, hand-created) by
+    stripping it only when present. Returns `("unknown", stem)` if the
+    remainder doesn't match the convention; both halves still pass the
+    relaxed identifier checks used by the DELETE endpoint, so the
+    broken-file flow keeps working."""
+    s = stem
+    if s.startswith("bp."):
+        s = s[len("bp.") :]
+    if "." in s:
+        type_, _, name = s.partition(".")
         if _DELETE_TYPE_RE.match(type_) and _NAME_RE.match(name):
             return type_, name
-    return "unknown", stem
+    return "unknown", s
+
+
+def _migrate_legacy_resources(blueprint_root: Path) -> int:
+    """One-time migration: move `resources/<type>.<name>.tf` files
+    (the old, broken layout) to `bp.<type>.<name>.tf` at the workspace
+    root. The old layout placed files in a subdirectory, which
+    OpenTofu's root-module loader silently ignored — so `tofu plan`
+    saw zero resources. Idempotent: skips files that already exist at
+    the destination, and removes the `resources/` dir once emptied.
+    Returns the count moved."""
+    legacy_dir = blueprint_root / "resources"
+    if not legacy_dir.is_dir():
+        return 0
+    moved = 0
+    for old_path in legacy_dir.glob("*.tf"):
+        new_path = blueprint_root / f"bp.{old_path.name}"
+        if not new_path.exists():
+            old_path.rename(new_path)
+            moved += 1
+    try:
+        legacy_dir.rmdir()  # only succeeds if empty
+    except OSError:
+        pass
+    return moved
 
 
 def _parse_resource_file(path: Path) -> dict[str, Any] | None:
@@ -823,14 +905,17 @@ def delete_resource(type_: str, name: str) -> dict[str, Any]:
         )
 
     settings = get_settings()
-    resources_dir = settings.blueprint_root / "resources"
-    file_path = resources_dir / f"{type_}.{name}.tf"
+    file_path = settings.blueprint_root / f"bp.{type_}.{name}.tf"
+    # Fall back to the legacy path so a delete still works if the
+    # migration hasn't run for some reason.
+    legacy_path = settings.blueprint_root / "resources" / f"{type_}.{name}.tf"
     layout_path = settings.blueprint_root / "_layout.json"
 
     deleted_file = False
-    if file_path.exists():
-        file_path.unlink()
-        deleted_file = True
+    for candidate in (file_path, legacy_path):
+        if candidate.exists():
+            candidate.unlink()
+            deleted_file = True
 
     deleted_layout = False
     if layout_path.exists():

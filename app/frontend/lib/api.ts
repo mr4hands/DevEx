@@ -16,10 +16,14 @@ export async function fetchPlan(): Promise<PlanResponse> {
   return res.json();
 }
 
+export type PlanRoot = "default" | "blueprint";
+
 export async function fetchPlanDiff(
   signal?: AbortSignal,
+  root: PlanRoot = "default",
 ): Promise<PlanDiffResponse> {
-  const res = await fetch("/api/plan-diff", { cache: "no-store", signal });
+  const qs = `?root=${encodeURIComponent(root)}`;
+  const res = await fetch(`/api/plan-diff${qs}`, { cache: "no-store", signal });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/plan-diff failed (${res.status}): ${text}`);
@@ -54,6 +58,28 @@ export async function fetchBlueprintResources(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/blueprint/resources failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Persists a batch of canvas node positions to `_layout.json`. Used
+ *  by the drag-to-save flow — debounced client-side so a single drag
+ *  produces one request, not one per pixel. Keys are `<type>.<name>`. */
+export async function patchBlueprintLayout(
+  positions: Record<string, { x: number; y: number }>,
+  signal?: AbortSignal,
+): Promise<{ updated: number }> {
+  const res = await fetch("/api/blueprint/layout", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ positions }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `/api/blueprint/layout failed (${res.status}): ${text}`,
+    );
   }
   return res.json();
 }

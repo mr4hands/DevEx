@@ -94,6 +94,8 @@ export function PlanDiff({
   error,
   onRunPlan,
   focusAddress,
+  root,
+  onRootChange,
 }: {
   diff: PlanDiffResponse | null;
   loading: boolean;
@@ -102,6 +104,12 @@ export function PlanDiff({
   /** When set, the matching row auto-expands (used by the drawer's
    *  "open in PlanDiff" deep-link). */
   focusAddress?: string | null;
+  /** Which workspace the plan is currently against. The plan tab can
+   *  flip between the deployed `live/dev` workspace and the canvas's
+   *  `live/blueprint` so the user can preview what their blueprint
+   *  would do on apply. */
+  root?: "default" | "blueprint";
+  onRootChange?: (next: "default" | "blueprint") => void;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedModules, setCollapsedModules] = useState<Set<string>>(new Set());
@@ -194,6 +202,32 @@ export function PlanDiff({
           <span className="font-mono text-muted-foreground">grouped</span>
         </div>
         <div className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+          {onRootChange && (
+            <>
+              <button
+                type="button"
+                onClick={() => onRootChange("default")}
+                className={`px-1.5 h-5 rounded-sm transition-colors hover:bg-muted ${
+                  root !== "blueprint" ? "text-foreground" : ""
+                }`}
+                title="Plan against live/dev"
+              >
+                live/dev
+              </button>
+              <span className="text-border">|</span>
+              <button
+                type="button"
+                onClick={() => onRootChange("blueprint")}
+                className={`px-1.5 h-5 rounded-sm transition-colors hover:bg-muted ${
+                  root === "blueprint" ? "text-foreground" : ""
+                }`}
+                title="Plan against live/blueprint (canvas workspace)"
+              >
+                blueprint
+              </button>
+              <span className="text-border">·</span>
+            </>
+          )}
           <button
             type="button"
             className="px-1.5 h-5 rounded-sm transition-colors hover:bg-muted"

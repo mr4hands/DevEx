@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from ..settings import get_settings
 from ..tofu import (
@@ -60,14 +60,33 @@ def plan() -> dict[str, Any]:
 
 
 @router.get("/plan-diff")
-def plan_diff_route() -> dict[str, Any]:
+def plan_diff_route(
+    root: str = Query(
+        default="default",
+        description=(
+            "Which workspace to plan. 'default' uses `settings.tofu_root`"
+            " (live/dev); 'blueprint' uses `settings.blueprint_root`"
+            " (live/blueprint) so the user can preview their canvas's"
+            " HCL without leaving the UI."
+        ),
+    ),
+) -> dict[str, Any]:
     """Run `tofu plan` and return the planned changes.
 
     Slow (5-30s real, faster against Moto). Read-only — never applies.
     """
     settings = get_settings()
+    if root == "blueprint":
+        target_root = settings.blueprint_root
+    elif root == "default":
+        target_root = settings.tofu_root
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown plan root {root!r}. Use 'default' or 'blueprint'.",
+        )
     try:
-        raw_plan = plan_diff(settings.tofu_root)
+        raw_plan = plan_diff(target_root)
     except TofuError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -81,7 +100,8 @@ def plan_diff_route() -> dict[str, Any]:
     counts = Counter(c.action_kind for c in changes)
 
     return {
-        "tofu_root": str(settings.tofu_root),
+        "tofu_root": str(target_root),
+        "root": root,
         "terraform_version": raw_plan.get("terraform_version"),
         "format_version": raw_plan.get("format_version"),
         "total_changes": len(changes),
