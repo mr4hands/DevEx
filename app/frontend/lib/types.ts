@@ -114,6 +114,9 @@ export type SchemasResponse = {
 export type BlueprintResource = {
   type: string;
   name: string;
+  /** Real cloud id when this resource was adopted via an import block;
+   *  null/absent for resources authored from scratch. */
+  import_id?: string | null;
   attributes: Record<string, unknown>;
   /** Nested blocks (`versioning`, `lifecycle_rule`, etc.) when the
    *  resource was successfully parsed. Always present in the response
@@ -133,6 +136,32 @@ export type BlueprintResourcesResponse = {
   blueprint_root: string;
   resources: BlueprintResource[];
   edges: BlueprintEdge[];
+};
+
+/** One discovered (unmanaged) AWS resource in the discovery manifest the
+ *  agent skill writes. Draggable onto the canvas to adopt it. */
+export type ExistingResource = {
+  address: string;
+  type: string;
+  name: string;
+  import_id: string;
+  summary_attributes: Record<string, unknown>;
+};
+
+export type ExistingResourceGroup = {
+  type: string;
+  resources: ExistingResource[];
+};
+
+export type ExistingResourcesResponse = {
+  source: string | null;
+  generated_at: string | null;
+  scopes_loaded: string[];
+  groups: ExistingResourceGroup[];
+  /** Present when there's no manifest yet (cold start). */
+  hint?: string;
+  /** Present when the manifest on disk is malformed. */
+  error?: string;
 };
 
 export type ChatMessage = {

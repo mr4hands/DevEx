@@ -28,7 +28,11 @@ import {
   type DragEvent,
 } from "react";
 
-import { fetchBlueprintResources, patchBlueprintLayout } from "@/lib/api";
+import {
+  fetchBlueprintResources,
+  patchBlueprintLayout,
+  writeBlueprintResource,
+} from "@/lib/api";
 import {
   autoLayoutNodes,
   shouldAutoLayout,
@@ -42,10 +46,15 @@ import {
   PALETTE_DRAG_TYPE,
   type PaletteItem,
 } from "@/lib/blueprintPalette";
+import {
+  ExistingResourceTree,
+  EXISTING_DRAG_TYPE,
+} from "@/components/ExistingResourceTree";
 import type {
   BlueprintBlockInstance,
   BlueprintEdge,
   BlueprintResource,
+  ExistingResource,
 } from "@/lib/types";
 
 /**
@@ -85,6 +94,10 @@ export type BlueprintNodeData = {
    *  them, then clears the flag after a short window so the cue
    *  doesn't linger on the next interaction. */
   justArrived?: boolean;
+  /** Real cloud id when this node was adopted via an import block. */
+  importId?: string | null;
+  /** True when this node represents an adopted (imported) resource. */
+  imported?: boolean;
 } & Record<string, unknown>;  // index signature satisfies React Flow's Node constraint
 
 export type BlueprintNode = Node<BlueprintNodeData>;
@@ -101,6 +114,9 @@ export function BlueprintCanvas({
   panToAddress,
   onPanConsumed,
   onCommitToPR,
+  existingReloadKey,
+  onDiscover,
+  onAdopted,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -129,6 +145,14 @@ export function BlueprintCanvas({
    *  prompt that drives the agent to promote the blueprint into a
    *  reviewable PR. */
   onCommitToPR?: () => void;
+  /** Bumped to refetch the existing-resources tree (e.g. after a
+   *  discovery tool-result lands a new manifest). */
+  existingReloadKey?: number;
+  /** Seed an agent discovery run for a scope ("all" or a type). */
+  onDiscover?: (scope: string) => void;
+  /** Called after an adopt-drop persists the import file, so the parent
+   *  can bump the canvas reload + refetch. */
+  onAdopted?: () => void;
 }) {
   return (
     <ReactFlowProvider>
@@ -142,6 +166,9 @@ export function BlueprintCanvas({
         panToAddress={panToAddress}
         onPanConsumed={onPanConsumed}
         onCommitToPR={onCommitToPR}
+        existingReloadKey={existingReloadKey}
+        onDiscover={onDiscover}
+        onAdopted={onAdopted}
       />
     </ReactFlowProvider>
   );
@@ -157,6 +184,9 @@ function CanvasInner({
   panToAddress,
   onPanConsumed,
   onCommitToPR,
+  existingReloadKey,
+  onDiscover,
+  onAdopted,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -167,6 +197,9 @@ function CanvasInner({
   panToAddress?: string | null;
   onPanConsumed?: () => void;
   onCommitToPR?: () => void;
+  existingReloadKey?: number;
+  onDiscover?: (scope: string) => void;
+  onAdopted?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -272,6 +305,53 @@ function CanvasInner({
   const onDrop = useCallback(
     (e: DragEvent) => {
       e.preventDefault();
+
+      // Adopt-drop: an existing (discovered) resource dragged from the tree.
+      const existingRaw = e.dataTransfer.getData(EXISTING_DRAG_TYPE);
+      if (existingRaw) {
+        let existing: ExistingResource;
+        try {
+          existing = JSON.parse(existingRaw) as ExistingResource;
+        } catch {
+          return;
+        }
+        const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+        const adoptMeta = familyOf(existing.type);
+        const adoptedNode: BlueprintNode = {
+          id: `${existing.type}.${existing.name}`,
+          type: "resource",
+          position,
+          data: {
+            resourceType: existing.type,
+            name: existing.name,
+            family: adoptMeta.family,
+            monogram: adoptMeta.monogram,
+            attributes: existing.summary_attributes,
+            importId: existing.import_id,
+            imported: true,
+          },
+        };
+        setNodes((nds) => {
+          const without = nds.filter((n) => n.id !== adoptedNode.id);
+          return [...without, adoptedNode];
+        });
+        onSelectNode(adoptedNode);
+        // Persist immediately: thin pre-fill body + import block.
+        void writeBlueprintResource({
+          type: existing.type,
+          name: existing.name,
+          attributes: existing.summary_attributes,
+          import_id: existing.import_id,
+          position,
+        })
+          .then(() => onAdopted?.())
+          .catch((err) =>
+            setLoadError(`Adopt failed: ${(err as Error).message}`),
+          );
+        return;
+      }
+
+      // Palette-drop: a fresh resource (unchanged behavior).
       const resourceType = e.dataTransfer.getData(PALETTE_DRAG_TYPE);
       if (!resourceType) return;
       const meta = familyOf(resourceType);
@@ -298,7 +378,7 @@ function CanvasInner({
       setNodes((nds) => [...nds, newNode]);
       onSelectNode(newNode);
     },
-    [screenToFlowPosition, setNodes, nextNameByType, onSelectNode],
+    [screenToFlowPosition, setNodes, nextNameByType, onSelectNode, onAdopted],
   );
 
   // Bubble selection up to the parent so the drawer can react.
@@ -460,6 +540,10 @@ function CanvasInner({
 
   return (
     <div className="flex-1 min-h-0 flex">
+      <ExistingResourceTree
+        reloadKey={existingReloadKey}
+        onDiscover={onDiscover ?? (() => {})}
+      />
       <Palette />
       <div ref={wrapperRef} className="flex-1 min-w-0 relative">
         <ReactFlow
@@ -589,6 +673,8 @@ function serverNodeFrom(
       blocks: r.blocks,
       parseError: r.parse_error,
       filename: r.filename,
+      importId: r.import_id ?? null,
+      imported: Boolean(r.import_id),
     },
   };
 }
@@ -700,6 +786,14 @@ function ResourceNode({ data, selected }: NodeProps<BlueprintNode>) {
           {data.resourceType}
         </div>
       </div>
+      {(data.imported || data.importId) && (
+        <span
+          title={`adopted via import (id: ${data.importId ?? "?"})`}
+          className="ml-1 inline-flex items-center px-1 h-[15px] rounded-sm ring-1 ring-inset ring-sky-400/50 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 font-mono text-[8px] uppercase tracking-wide"
+        >
+          imp
+        </span>
+      )}
       <Handle
         type="source"
         position={Position.Right}

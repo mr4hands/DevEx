@@ -43,6 +43,23 @@ The Blueprint canvas authored resources as sandbox files at the root of
 
 Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
 
+// Seeded into the chat by the Existing-resources tree's "discover" button.
+// The agent has the read-only AWS MCP + the aws-resource-discovery skill,
+// so it can enumerate the scope and write the manifest the tree reads.
+function discoveryPrompt(scope: string): string {
+  const target =
+    scope === "all"
+      ? "all supported AWS resource types"
+      : `the type \`${scope}\``;
+  return `Discover existing AWS resources for the Blueprint tree.
+
+Use the aws-resource-discovery skill to enumerate ${target} via the
+read-only AWS API MCP, then write/merge the results into
+\`live/blueprint/_discovered.json\` in the manifest schema the skill
+documents (groups of { address, type, name, import_id, summary_attributes }).
+Do not modify any other files. Report how many resources you found.`;
+}
+
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -231,6 +248,9 @@ export default function Home() {
             panToAddress={blueprintPanTo}
             onPanConsumed={() => setBlueprintPanTo(null)}
             onCommitToPR={handleCommitToPR}
+            existingReloadKey={blueprintReload}
+            onDiscover={(scope) => setPendingPrompt(discoveryPrompt(scope))}
+            onAdopted={() => setBlueprintReload((k) => k + 1)}
           />
         )}
       </section>

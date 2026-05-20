@@ -1,6 +1,7 @@
 import type {
   BlueprintResourcesResponse,
   ChatMessage,
+  ExistingResourcesResponse,
   PlanDiffResponse,
   PlanResponse,
   SchemasResponse,
@@ -113,6 +114,7 @@ export async function writeBlueprintResource(
   body: {
     type: string;
     name: string;
+    import_id?: string | null;
     attributes: Record<string, unknown>;
     blocks?: Record<
       string,
@@ -134,6 +136,46 @@ export async function writeBlueprintResource(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/blueprint/resource failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Reads the discovery manifest the agent skill writes. Deterministic —
+ *  no LLM. `scope` filters to one resource type. */
+export async function fetchExistingResources(
+  signal?: AbortSignal,
+  scope?: string,
+): Promise<ExistingResourcesResponse> {
+  const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+  const res = await fetch(`/api/existing-resources${qs}`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/existing-resources failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Swaps an adopted resource's thin body for apply-clean HCL via
+ *  generate-config-out. Preserves the import block. */
+export async function generateBlueprintConfig(
+  type: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{ type: string; name: string; hcl: string }> {
+  const res = await fetch("/api/blueprint/generate-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type, name }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `/api/blueprint/generate-config failed (${res.status}): ${text}`,
+    );
   }
   return res.json();
 }

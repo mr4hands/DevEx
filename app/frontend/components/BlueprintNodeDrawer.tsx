@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   deleteBlueprintResource,
   fetchSchemas,
+  generateBlueprintConfig,
   writeBlueprintResource,
 } from "@/lib/api";
 import { FAMILY_CLASSES, familyOf } from "@/lib/resourceFamilies";
@@ -328,6 +329,14 @@ export function BlueprintNodeDrawer({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-3 text-xs">
+        {(node.data.imported || node.data.importId) && (
+          <AdoptedStrip
+            type={node.data.resourceType}
+            name={node.data.name}
+            importId={node.data.importId ?? null}
+            onGenerated={onResourceWritten}
+          />
+        )}
         {loading && <p className="text-muted-foreground">Loading schema…</p>}
         {node.data.parseError && (
           <section className="space-y-2">
@@ -512,6 +521,67 @@ function EmptyDrawer() {
           Drag a resource onto the canvas, then click it to edit.
         </p>
       </div>
+    </div>
+  );
+}
+
+/** Strip shown above the form for adopted (imported) nodes: surfaces the
+ *  real cloud id and a button that swaps the thin pre-fill body for
+ *  apply-clean HCL via generate-config-out. */
+function AdoptedStrip({
+  type,
+  name,
+  importId,
+  onGenerated,
+}: {
+  type: string;
+  name: string;
+  importId: string | null;
+  onGenerated?: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const onGenerate = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await generateBlueprintConfig(type, name);
+      onGenerated?.();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-sm border border-sky-200 dark:border-sky-900 bg-sky-50/60 dark:bg-sky-950/30 px-2 py-2">
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center px-1 h-[15px] rounded-sm ring-1 ring-inset ring-sky-400/50 text-sky-700 dark:text-sky-300 font-mono text-[8px] uppercase tracking-wide">
+          imported
+        </span>
+        <span
+          className="font-mono text-[10px] text-muted-foreground truncate"
+          title={importId ?? ""}
+        >
+          id: {importId ?? "(unknown)"}
+        </span>
+        <button
+          type="button"
+          onClick={onGenerate}
+          disabled={busy}
+          title="Replace the thin pre-fill with apply-clean HCL via generate-config-out"
+          className="ml-auto px-1.5 h-6 text-[10px] font-mono rounded-sm border border-border bg-background hover:bg-muted transition-colors disabled:opacity-50"
+        >
+          {busy ? "generating…" : "generate clean config"}
+        </button>
+      </div>
+      {err && (
+        <p className="mt-1 text-[10px] text-red-600 dark:text-red-400 break-words">
+          {err}
+        </p>
+      )}
     </div>
   );
 }
