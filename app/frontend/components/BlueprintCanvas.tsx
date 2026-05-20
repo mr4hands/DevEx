@@ -100,6 +100,7 @@ export function BlueprintCanvas({
   onCanvasNodeDelete,
   panToAddress,
   onPanConsumed,
+  onCommitToPR,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -124,6 +125,10 @@ export function BlueprintCanvas({
    *  the address can clear and not re-pan on every render. */
   panToAddress?: string | null;
   onPanConsumed?: () => void;
+  /** Fired by the "commit to PR" button. The parent seeds a chat
+   *  prompt that drives the agent to promote the blueprint into a
+   *  reviewable PR. */
+  onCommitToPR?: () => void;
 }) {
   return (
     <ReactFlowProvider>
@@ -136,6 +141,7 @@ export function BlueprintCanvas({
         onCanvasNodeDelete={onCanvasNodeDelete}
         panToAddress={panToAddress}
         onPanConsumed={onPanConsumed}
+        onCommitToPR={onCommitToPR}
       />
     </ReactFlowProvider>
   );
@@ -150,6 +156,7 @@ function CanvasInner({
   onCanvasNodeDelete,
   panToAddress,
   onPanConsumed,
+  onCommitToPR,
 }: {
   selectedNodeId: string | null;
   onSelectNode: (node: BlueprintNode | null) => void;
@@ -159,6 +166,7 @@ function CanvasInner({
   onCanvasNodeDelete?: (node: BlueprintNode) => Promise<void>;
   panToAddress?: string | null;
   onPanConsumed?: () => void;
+  onCommitToPR?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -482,6 +490,15 @@ function CanvasInner({
               className="px-1.5 h-6 text-[10px] font-mono rounded-sm border border-border bg-background hover:bg-muted text-foreground transition-colors disabled:opacity-50"
             >
               auto-layout
+            </button>
+            <button
+              type="button"
+              onClick={() => onCommitToPR?.()}
+              disabled={nodes.length === 0 || !onCommitToPR}
+              title="Ask the agent to promote these resources into a module + open a PR"
+              className="px-1.5 h-6 text-[10px] font-mono rounded-sm border border-accent bg-accent text-white hover:opacity-90 transition-colors disabled:opacity-50"
+            >
+              commit to PR
             </button>
           </Panel>
         </ReactFlow>

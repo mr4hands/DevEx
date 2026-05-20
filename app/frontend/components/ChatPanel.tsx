@@ -26,6 +26,8 @@ export function ChatPanel({
   onToolResult,
   contextResource,
   onClearContext,
+  pendingPrompt,
+  onPendingConsumed,
 }: {
   onToolResult?: () => void;
   /** Resource currently selected in the middle pane; auto-attaches as
@@ -33,6 +35,11 @@ export function ChatPanel({
   contextResource?: Resource | null;
   /** Clears the context — wired to ResourceList's selection setter. */
   onClearContext?: () => void;
+  /** When set, the chat auto-sends this text as a user message (used by
+   *  the Blueprint "commit to PR" button to drive the agent). Acked
+   *  via `onPendingConsumed` so it doesn't resend on every render. */
+  pendingPrompt?: string | null;
+  onPendingConsumed?: () => void;
 }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -42,8 +49,8 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const send = useCallback(async () => {
-    const trimmed = input.trim();
+  const send = useCallback(async (textOverride?: string) => {
+    const trimmed = (textOverride ?? input).trim();
     if (!trimmed || busy) return;
 
     // The user sees their original message in the transcript; the
@@ -166,6 +173,20 @@ export function ChatPanel({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClearContext]);
+
+  // Externally-driven send (Blueprint "commit to PR" button). When the
+  // parent sets a pending prompt and the chat isn't busy, fire it as a
+  // user message, then ack so it doesn't resend. If busy, we wait — the
+  // next render after the turn finishes retries. This is the
+  // "consume external signal" pattern; the setState-in-effect the rule
+  // flags is the send() + ack, which is intentional here.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (!pendingPrompt || busy) return;
+    void send(pendingPrompt);
+    onPendingConsumed?.();
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [pendingPrompt, busy, send, onPendingConsumed]);
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-background">
