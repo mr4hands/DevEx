@@ -126,6 +126,36 @@ Frontend, via env vars:
 |-----|---------|---------|
 | `BACKEND_URL` | `http://localhost:8088` | Where `/api/*` rewrites go |
 
+## Blueprint: adopt existing AWS resources
+
+The Blueprint tab can adopt **existing, unmanaged** AWS resources (ClickOps
+infra) under OpenTofu management, visually:
+
+1. **Discover.** The left rail has an "existing (aws)" tree. Click *discover*
+   (or the ↻ on a type) — this seeds a chat prompt that runs the
+   `aws-resource-discovery` skill. The skill enumerates AWS via the
+   **read-only** AWS API MCP and writes a manifest to
+   `live/blueprint/_discovered.json`. The tree reads that manifest from the
+   deterministic `GET /api/existing-resources` (no LLM in the serve path).
+2. **Adopt.** Drag a tree row onto the canvas. The backend writes
+   `live/blueprint/bp.<type>.<name>.tf` containing an `import { to, id }`
+   block plus a thin `resource { }` body pre-filled from the resource's
+   summary attributes. Adopted nodes show an **`imp`** badge.
+3. **Edit / clean up.** The node opens in the existing schema-driven form.
+   The drawer shows the import id and a *generate clean config* button that
+   runs `tofu plan -generate-config-out` (`POST /api/blueprint/generate-config`)
+   to replace the thin body with apply-clean HCL, preserving the import block.
+4. **Preview + promote.** The plan-diff tab (root = blueprint) shows the
+   change as `import` / `import_update`. *Commit to PR* promotes it through
+   the usual module → PR → manual-apply path.
+
+**Requirements:** the AWS API MCP must be enabled (it's wired in `.mcp.json`
+as `awslabs.aws-api-mcp-server`, `READ_OPERATIONS_ONLY=true`; needs `uvx`).
+It honors `AWS_ENDPOINT_URL_*`, so a `dev.local.env`-sourced shell discovers
+against Moto and a vanilla shell discovers against real AWS. Discovery needs
+the chat agent (`ANTHROPIC_API_KEY`); the serve/adopt/generate paths are
+deterministic.
+
 ## Safety posture
 
 The chat agent is a Claude Agent SDK session with `setting_sources=["project"]`,
