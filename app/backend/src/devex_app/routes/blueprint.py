@@ -33,7 +33,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from ..settings import get_settings
-from ..tofu import TofuError, providers_schema
+from ..tofu import TofuError, generate_resource_config, providers_schema
 
 router = APIRouter()
 
@@ -593,6 +593,58 @@ def _merge_layout(
         json.dumps(layout, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/blueprint/generate-config — clean HCL for an adopted resource
+# ---------------------------------------------------------------------------
+
+
+class GenerateConfigRequest(BaseModel):
+    """Body of POST /api/blueprint/generate-config — the 'generate clean
+    config' action for an adopted resource."""
+
+    type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
+    name: str = Field(..., description="HCL block label")
+
+
+@router.post("/blueprint/generate-config")
+def generate_config(req: GenerateConfigRequest) -> dict[str, Any]:
+    """Replace an adopted resource's thin pre-fill body with apply-clean
+    HCL from `tofu plan -generate-config-out`, preserving its import
+    block. Requires the resource to already exist on disk with an import
+    block (i.e. it was adopted, not authored from scratch)."""
+    settings = get_settings()
+    path = settings.blueprint_root / f"bp.{req.type}.{req.name}.tf"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No blueprint file for {req.type}.{req.name}.",
+        )
+    parsed = _parse_resource_file(path)
+    import_id = parsed.get("import_id") if parsed else None
+    if not import_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Resource has no import block; nothing to generate from.",
+        )
+    try:
+        generated_block = generate_resource_config(
+            settings.blueprint_root, req.type, req.name, import_id
+        )
+    except TofuError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    hcl = (
+        _render_import_block(req.type, req.name, import_id)
+        + "\n"
+        + generated_block.strip()
+        + "\n"
+    )
+    tmp = path.with_suffix(".tf.tmp")
+    tmp.write_text(hcl, encoding="utf-8")
+    tmp.replace(path)
+    return {"type": req.type, "name": req.name, "hcl": hcl}
 
 
 # ---------------------------------------------------------------------------

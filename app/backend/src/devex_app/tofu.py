@@ -136,6 +136,57 @@ def providers_schema(tofu_root: Path, *, use_cache: bool = True) -> dict[str, An
     return schema
 
 
+def generate_resource_config(
+    blueprint_root: Path,
+    type_: str,
+    name: str,
+    import_id: str,
+) -> str:
+    """Generate apply-clean HCL for an importable resource via
+    `tofu plan -generate-config-out`.
+
+    Runs in an isolated scratch dir containing only the provider config +
+    a lone `import` block. The isolation is required: generate-config-out
+    SKIPS any address that already has a resource body, and the blueprint
+    file has a (thin) body. We reuse the blueprint workspace's initialized
+    plugins via TF_DATA_DIR so no re-`init` is needed. Returns the
+    generated `resource { }` block text.
+    """
+    address = f"{type_}.{name}"
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp)
+        for fname in ("versions.tf", "providers.tf", "provider.tf"):
+            src = blueprint_root / fname
+            if src.exists():
+                (scratch / fname).write_text(
+                    src.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+        escaped = import_id.replace("\\", "\\\\").replace('"', '\\"')
+        (scratch / "import.tf").write_text(
+            f'import {{\n  to = {address}\n  id = "{escaped}"\n}}\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        terraform_dir = (blueprint_root / ".terraform").resolve()
+        if terraform_dir.exists():
+            env.setdefault("TF_DATA_DIR", str(terraform_dir))
+        generated = scratch / "generated.tf"
+        _run_tofu(
+            [
+                "plan",
+                "-generate-config-out",
+                str(generated),
+                "-no-color",
+                "-input=false",
+            ],
+            cwd=scratch,
+            env=env,
+        )
+        if not generated.exists():
+            raise TofuError("generate-config-out produced no output file")
+        return generated.read_text(encoding="utf-8").strip()
+
+
 # ---------------------------------------------------------------------------
 # Plan-diff support
 # ---------------------------------------------------------------------------
