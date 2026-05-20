@@ -687,6 +687,7 @@ def list_resources() -> dict[str, Any]:
                     "type": type_guess,
                     "name": name_guess,
                     "attributes": {},
+                    "import_id": None,
                     "position": layout.get(
                         f"{type_guess}.{name_guess}",
                         {"x": 0, "y": 0},
@@ -712,6 +713,7 @@ def list_resources() -> dict[str, Any]:
                 "name": name,
                 "attributes": attrs,
                 "blocks": blocks,
+                "import_id": parsed.get("import_id"),
                 "position": layout.get(address, {"x": 0, "y": 0}),
                 "filename": path.name,
             }
@@ -822,7 +824,35 @@ def _parse_resource_file(path: Path) -> dict[str, Any] | None:
     name = _strip_quotes(name_quoted)
     raw_body = inner[name_quoted]
     attrs, blocks = _split_attrs_and_blocks(raw_body)
-    return {"type": type_, "name": name, "attributes": attrs, "blocks": blocks}
+
+    # An adopted resource carries a sibling `import { to, id }` block.
+    # Match it to this resource by its `to` address and surface the id.
+    import_id: str | None = None
+    for imp in parsed.get("import") or []:
+        if _import_to_matches(imp.get("to"), type_, name):
+            raw_id = imp.get("id")
+            import_id = _strip_quotes(str(raw_id)) if raw_id is not None else None
+            break
+
+    return {
+        "type": type_,
+        "name": name,
+        "attributes": attrs,
+        "blocks": blocks,
+        "import_id": import_id,
+    }
+
+
+def _import_to_matches(to: Any, type_: str, name: str) -> bool:
+    """python-hcl2 returns the `to` expression interpolation-wrapped
+    (`${aws_s3_bucket.logs}`) or bare (`aws_s3_bucket.logs`). Normalize
+    both before comparing to `<type>.<name>`."""
+    if not isinstance(to, str):
+        return False
+    bare = to.strip()
+    if bare.startswith("${") and bare.endswith("}"):
+        bare = bare[2:-1].strip()
+    return bare == f"{type_}.{name}"
 
 
 def _split_attrs_and_blocks(
