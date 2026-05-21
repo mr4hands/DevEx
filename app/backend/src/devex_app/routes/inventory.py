@@ -102,6 +102,8 @@ def inventory() -> dict[str, Any]:
     # Planned resources authored in the blueprint sandbox (bp.*.tf) — not
     # yet applied or discovered, but classified by their Component tag so a
     # just-added resource shows under its component immediately.
+    sandbox_account = hierarchy.get("account_id") or "unknown"
+    sandbox_region = hierarchy.get("region") or "unknown"
     for res in (list_resources().get("resources") or []):
         address = f"{res['type']}.{res['name']}"
         import_id = res.get("import_id")
@@ -112,6 +114,10 @@ def inventory() -> dict[str, Any]:
         tags = attrs.get("tags") or {}
         component, source = classify_component(tags, address, overrides)
         account, region = account_region(attrs)
+        if account == "unknown":
+            account = sandbox_account
+        if region == "unknown":
+            region = sandbox_region
         items[key] = {
             "address": address,
             "type": res["type"],
