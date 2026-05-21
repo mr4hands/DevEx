@@ -7,14 +7,20 @@ import { BlueprintNodeDrawer } from "@/components/BlueprintNodeDrawer";
 import { ChatPanel } from "@/components/ChatPanel";
 import { PlanDiff } from "@/components/PlanDiff";
 import { ResourceDrawer } from "@/components/ResourceDrawer";
-import { ResourceTree } from "@/components/ResourceTree";
+import { ResourceInspector } from "@/components/ResourceInspector";
+import { ResourceTree, inventoryToResource } from "@/components/ResourceTree";
 import {
   deleteBlueprintResource,
   fetchPlanDiff,
   setComponentOverride,
   type PlanRoot,
 } from "@/lib/api";
-import type { PlanDiffResponse, Resource, ResourceChange } from "@/lib/types";
+import type {
+  InventoryResource,
+  PlanDiffResponse,
+  Resource,
+  ResourceChange,
+} from "@/lib/types";
 
 // The work surface (center) toggles between the blueprint canvas and the
 // plan-diff. The resource tree is now a persistent navigator, not a tab.
@@ -80,9 +86,11 @@ If it's unclear what to add, ask me first. Do not run \`tofu apply\`.`;
 
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
-  // Current component of the selected resource, surfaced by the tree so the
-  // inspector can show + reassign it.
-  const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
+  // Full inventory row for the tree selection — drives the unified inspector
+  // (state/draft/component). `selected` (Resource) stays for chat context.
+  const [selectedItem, setSelectedItem] = useState<InventoryResource | null>(
+    null,
+  );
   const [refreshKey, setRefreshKey] = useState(0);
   const [workTab, setWorkTab] = useState<WorkTab>("canvas");
   // The agent column collapses to a thin strip to give the work surface room.
@@ -214,7 +222,6 @@ export default function Home() {
   const handleReassign = useCallback(
     async (address: string, component: string) => {
       await setComponentOverride(address, component);
-      setSelectedComponent(component);
       setRefreshKey((k) => k + 1);
     },
     [],
@@ -274,9 +281,9 @@ export default function Home() {
       <aside className="w-[260px] shrink-0 border-r border-border flex flex-col min-h-0">
         <ResourceTree
           selected={selected}
-          onSelect={(r, c) => {
-            setSelected(r);
-            setSelectedComponent(c);
+          onSelect={(item) => {
+            setSelectedItem(item);
+            setSelected(inventoryToResource(item));
             setBlueprintNode(null);
           }}
           onAddToComponent={(c) => setPendingPrompt(addToComponentPrompt(c))}
@@ -341,15 +348,20 @@ export default function Home() {
             }}
             onNavigateToRef={setBlueprintPanTo}
           />
-        ) : (
-          <ResourceDrawer
-            resource={selected}
+        ) : selectedItem ? (
+          <ResourceInspector
+            item={selectedItem}
             change={selectedChange}
-            onClose={() => setSelected(null)}
+            onClose={() => {
+              setSelected(null);
+              setSelectedItem(null);
+            }}
             onOpenInPlanDiff={openInPlanDiff}
-            component={selectedComponent}
             onReassign={handleReassign}
+            onChanged={() => setRefreshKey((k) => k + 1)}
           />
+        ) : (
+          <ResourceDrawer resource={null} onClose={() => setSelected(null)} />
         )}
       </aside>
     </main>

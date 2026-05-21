@@ -54,8 +54,8 @@ function groupInventory(items: InventoryResource[]): AccountGroup[] {
   return accounts;
 }
 
-/** Map an inventory item to the Resource shape the drawer expects. */
-function toResource(r: InventoryResource): Resource {
+/** Map an inventory item to the Resource shape the drawer/chat expect. */
+export function inventoryToResource(r: InventoryResource): Resource {
   return {
     address: r.address,
     type: r.type,
@@ -75,7 +75,9 @@ export function ResourceTree({
   refreshKey,
 }: {
   selected: Resource | null;
-  onSelect: (r: Resource, component: string) => void;
+  /** Fires with the full inventory item so the inspector can act on its
+   *  state/draft/component. */
+  onSelect: (item: InventoryResource) => void;
   /** Fired by a component node's "+add" button — the parent seeds an agent
    *  prompt to add resources to that component. */
   onAddToComponent?: (component: string) => void;
@@ -209,7 +211,7 @@ export function ResourceTree({
                             key={r.address}
                             item={r}
                             selected={selected?.address === r.address}
-                            onSelect={() => onSelect(toResource(r), r.component)}
+                            onSelect={() => onSelect(r)}
                           />
                         ))}
                       </TreeBranch>
