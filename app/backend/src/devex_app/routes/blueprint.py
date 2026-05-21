@@ -29,11 +29,13 @@ from pathlib import Path
 from typing import Any
 
 import hcl2
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
+from .. import drafts
 from ..settings import get_settings
 from ..tofu import TofuError, generate_resource_config, providers_schema
+from ._deps import resolve_owner
 
 router = APIRouter()
 
@@ -1046,6 +1048,114 @@ def _find_references(attrs: Any) -> list[str]:
 
     walk(attrs)
     return found
+
+
+# ---------------------------------------------------------------------------
+# POST /api/blueprint/draft — owner-scoped draft CRUD
+# ---------------------------------------------------------------------------
+
+
+class DraftRequest(BaseModel):
+    """Body of POST /api/blueprint/draft. `kind` selects the change type;
+    `attributes`/`import_id` seed the HCL for new/adopt/edit; `delete`
+    records a marker only."""
+
+    kind: str = Field(..., description="new | adopt | edit | delete")
+    type: str = Field(...)
+    name: str = Field(...)
+    component: str | None = None
+    source_address: str | None = None
+    import_id: str | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("kind")
+    @classmethod
+    def _kind_valid(cls, v: str) -> str:
+        if v not in {"new", "adopt", "edit", "delete"}:
+            raise ValueError(f"Invalid draft kind {v!r}")
+        return v
+
+    @field_validator("type")
+    @classmethod
+    def _type_valid(cls, v: str) -> str:
+        if not _DELETE_TYPE_RE.match(v):
+            raise ValueError(f"Invalid resource type {v!r}")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_valid(cls, v: str) -> str:
+        if not _NAME_RE.match(v):
+            raise ValueError(f"Invalid resource name {v!r}")
+        return v
+
+
+def _component_target_module(component: str | None) -> str | None:
+    if not component:
+        return None
+    slug = component.lower().replace(" ", "_")
+    return f"modules/{slug}"
+
+
+@router.post("/blueprint/draft")
+def write_draft(
+    req: DraftRequest, owner: str = Depends(resolve_owner)
+) -> dict[str, Any]:
+    settings = get_settings()
+    owner_dir = drafts.owner_dir(settings.blueprint_root, owner)
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    address = f"{req.type}.{req.name}"
+    path = owner_dir / f"bp.{req.type}.{req.name}.tf"
+
+    hcl = ""
+    if req.kind == "delete":
+        # Marker only — remove any stale HCL for this address.
+        if path.exists():
+            path.unlink()
+    else:
+        read_only = _read_only_attr_names(req.type)
+        authored = {k: v for k, v in req.attributes.items() if k not in read_only}
+        if req.component:
+            tags = dict(authored.get("tags") or {})
+            tags["Component"] = req.component
+            authored = {**authored, "tags": tags}
+        resource_hcl = _render_resource_block(req.type, req.name, authored, {})
+        if req.kind == "adopt" and req.import_id:
+            hcl = (
+                _render_import_block(req.type, req.name, req.import_id)
+                + "\n"
+                + resource_hcl
+            )
+        else:
+            hcl = resource_hcl
+        tmp = path.with_suffix(".tf.tmp")
+        tmp.write_text(hcl, encoding="utf-8")
+        tmp.replace(path)
+
+    entry = {
+        "kind": req.kind,
+        "owner": owner,
+        "component": req.component,
+        "source_address": req.source_address,
+        "target_module": _component_target_module(req.component),
+    }
+    drafts.save_draft_entry(settings.blueprint_root, owner, address, entry)
+    return {"address": address, "owner": owner, "entry": entry, "hcl": hcl}
+
+
+@router.delete("/blueprint/draft/{type_}/{name}")
+def discard_draft(
+    type_: str, name: str, owner: str = Depends(resolve_owner)
+) -> dict[str, Any]:
+    if not _DELETE_TYPE_RE.match(type_) or not _NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid type/name")
+    settings = get_settings()
+    address = f"{type_}.{name}"
+    path = drafts.owner_dir(settings.blueprint_root, owner) / f"bp.{type_}.{name}.tf"
+    if path.exists():
+        path.unlink()
+    drafts.delete_draft_entry(settings.blueprint_root, owner, address)
+    return {"address": address, "owner": owner, "discarded": True}
 
 
 # ---------------------------------------------------------------------------
