@@ -2,6 +2,7 @@ import type {
   BlueprintResourcesResponse,
   ChatMessage,
   DraftRequest,
+  DraftsResponse,
   ExistingResourcesResponse,
   Hierarchy,
   InventoryResponse,
@@ -240,6 +241,21 @@ export async function writeDraft(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/blueprint/draft failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Lists the current owner's pending drafts (for the pending-changes bar). */
+export async function fetchDrafts(
+  signal?: AbortSignal,
+): Promise<DraftsResponse> {
+  const res = await fetch("/api/blueprint/drafts", {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/drafts failed (${res.status}): ${text}`);
   }
   return res.json();
 }

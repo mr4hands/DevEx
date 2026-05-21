@@ -201,6 +201,20 @@ export type DraftRequest = {
   attributes?: Record<string, unknown>;
 };
 
+export type Draft = {
+  address: string;
+  kind: "new" | "adopt" | "edit" | "delete";
+  owner?: string;
+  component?: string | null;
+  source_address?: string | null;
+  target_module?: string | null;
+};
+
+export type DraftsResponse = {
+  owner: string;
+  drafts: Draft[];
+};
+
 export type InventoryResponse = {
   resources: InventoryResource[];
   components: Record<string, { display_name?: string; target_module?: string }>;

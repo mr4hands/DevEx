@@ -1151,6 +1151,17 @@ def discard_draft(
     return {"address": address, "owner": owner, "discarded": True}
 
 
+@router.get("/blueprint/drafts")
+def list_drafts(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
+    """List the requesting owner's pending drafts (the pending-changes bar
+    reads this). Each entry is the `_drafts.json` value plus its address."""
+    settings = get_settings()
+    data = drafts.load_drafts(settings.blueprint_root, owner)
+    items = [{"address": address, **entry} for address, entry in data.items()]
+    items.sort(key=lambda d: (str(d.get("component") or "~"), d["address"]))
+    return {"owner": owner, "drafts": items}
+
+
 # ---------------------------------------------------------------------------
 # DELETE /api/blueprint/resource/{type}/{name}
 # ---------------------------------------------------------------------------
