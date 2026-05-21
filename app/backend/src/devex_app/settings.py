@@ -54,6 +54,7 @@ class Settings:
         repo_root: Path,
         tofu_root: Path,
         blueprint_root: Path,
+        default_owner: str,
     ) -> None:
         self.anthropic_api_key = anthropic_api_key
         self.anthropic_model = anthropic_model
@@ -63,6 +64,7 @@ class Settings:
         # workspace. Defaults to `live/blueprint/` so the canvas's
         # output never collides with the deployed dev environment.
         self.blueprint_root = blueprint_root
+        self.default_owner = default_owner
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -78,4 +80,5 @@ class Settings:
             repo_root=repo_root,
             tofu_root=tofu_root,
             blueprint_root=blueprint_root,
+            default_owner=os.environ.get("DEVEX_OWNER", "local"),
         )
