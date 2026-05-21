@@ -9,6 +9,7 @@ any other mutating subcommand. Matches the repo's safety posture
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -18,6 +19,13 @@ from typing import Any
 
 class TofuError(RuntimeError):
     pass
+
+
+# Cache parsed provider schemas. Key: resolved workspace path. Value:
+# (lockfile mtime, parsed schema). `tofu providers schema -json` returns
+# ~30MB for AWS; once any resource type can be dragged, /api/schemas gets
+# called often, so we parse once per provider version.
+_schema_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 @dataclass
@@ -36,9 +44,11 @@ class Resource:
         return self.type
 
 
-def _run_tofu(args: list[str], cwd: Path) -> str:
+def _run_tofu(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
     # Inherits os.environ — settings.get_settings() merges dev.local.env at
     # startup, so Moto endpoints are already present when present on disk.
+    # `env` overrides that for callers that need a tweaked environment
+    # (e.g. generate-config-out reusing the workspace's TF_DATA_DIR).
     try:
         result = subprocess.run(
             ["tofu", *args],
@@ -46,6 +56,7 @@ def _run_tofu(args: list[str], cwd: Path) -> str:
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise TofuError("`tofu` CLI not found on PATH") from exc
@@ -96,18 +107,84 @@ def resources_from_state(state: dict[str, Any]) -> list[Resource]:
 # ---------------------------------------------------------------------------
 
 
-def providers_schema(tofu_root: Path) -> dict[str, Any]:
-    """`tofu providers schema -json` — returns the full provider schema
-    JSON for whatever providers are initialized in `tofu_root`.
+def providers_schema(tofu_root: Path, *, use_cache: bool = True) -> dict[str, Any]:
+    """`tofu providers schema -json`, cached per workspace + provider
+    version.
 
-    Requires `tofu init` to have been run in that workspace at least
-    once. Schemas are large (the AWS provider alone is ~30MB); callers
-    should filter to the resource types they care about.
+    Returns the full provider schema JSON for whatever providers are
+    initialized in `tofu_root`. Requires `tofu init` to have been run in
+    that workspace at least once. Schemas are large (the AWS provider
+    alone is ~30MB); callers should filter to the resource types they
+    care about.
+
+    The cache key is the resolved workspace path; invalidation keys off
+    the `.terraform.lock.hcl` mtime so a `tofu init` that changes provider
+    versions busts it. Once any resource type can be dragged onto the
+    canvas, `/api/schemas` is hit often — re-parsing 30MB each time would
+    be wasteful.
     """
+    key = str(tofu_root.resolve())
+    lock = tofu_root / ".terraform.lock.hcl"
+    mtime = lock.stat().st_mtime if lock.exists() else 0.0
+    if use_cache:
+        hit = _schema_cache.get(key)
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
     raw = _run_tofu(["providers", "schema", "-json"], cwd=tofu_root)
-    if not raw.strip():
-        return {}
-    return json.loads(raw)
+    schema = json.loads(raw) if raw.strip() else {}
+    _schema_cache[key] = (mtime, schema)
+    return schema
+
+
+def generate_resource_config(
+    blueprint_root: Path,
+    type_: str,
+    name: str,
+    import_id: str,
+) -> str:
+    """Generate apply-clean HCL for an importable resource via
+    `tofu plan -generate-config-out`.
+
+    Runs in an isolated scratch dir containing only the provider config +
+    a lone `import` block. The isolation is required: generate-config-out
+    SKIPS any address that already has a resource body, and the blueprint
+    file has a (thin) body. We reuse the blueprint workspace's initialized
+    plugins via TF_DATA_DIR so no re-`init` is needed. Returns the
+    generated `resource { }` block text.
+    """
+    address = f"{type_}.{name}"
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp)
+        for fname in ("versions.tf", "providers.tf", "provider.tf"):
+            src = blueprint_root / fname
+            if src.exists():
+                (scratch / fname).write_text(
+                    src.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+        escaped = import_id.replace("\\", "\\\\").replace('"', '\\"')
+        (scratch / "import.tf").write_text(
+            f'import {{\n  to = {address}\n  id = "{escaped}"\n}}\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        terraform_dir = (blueprint_root / ".terraform").resolve()
+        if terraform_dir.exists():
+            env.setdefault("TF_DATA_DIR", str(terraform_dir))
+        generated = scratch / "generated.tf"
+        _run_tofu(
+            [
+                "plan",
+                "-generate-config-out",
+                str(generated),
+                "-no-color",
+                "-input=false",
+            ],
+            cwd=scratch,
+            env=env,
+        )
+        if not generated.exists():
+            raise TofuError("generate-config-out produced no output file")
+        return generated.read_text(encoding="utf-8").strip()
 
 
 # ---------------------------------------------------------------------------

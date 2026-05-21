@@ -1,6 +1,11 @@
 import type {
   BlueprintResourcesResponse,
   ChatMessage,
+  DraftRequest,
+  DraftsResponse,
+  ExistingResourcesResponse,
+  Hierarchy,
+  InventoryResponse,
   PlanDiffResponse,
   PlanResponse,
   SchemasResponse,
@@ -113,6 +118,7 @@ export async function writeBlueprintResource(
   body: {
     type: string;
     name: string;
+    import_id?: string | null;
     attributes: Record<string, unknown>;
     blocks?: Record<
       string,
@@ -134,6 +140,139 @@ export async function writeBlueprintResource(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/blueprint/resource failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Unified resource inventory (managed + unmanaged), classified by
+ *  account/region/component. The tree groups this client-side. */
+export async function fetchInventory(
+  signal?: AbortSignal,
+): Promise<InventoryResponse> {
+  const res = await fetch("/api/inventory", { cache: "no-store", signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/inventory failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Reads the hierarchy mapping (components + overrides). */
+export async function fetchHierarchy(signal?: AbortSignal): Promise<Hierarchy> {
+  const res = await fetch("/api/hierarchy", { cache: "no-store", signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/hierarchy failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Assigns a resource to a component (override). Creates the component on
+ *  the fly server-side if it's new. Returns the updated hierarchy. */
+export async function setComponentOverride(
+  address: string,
+  component: string,
+  signal?: AbortSignal,
+): Promise<Hierarchy> {
+  const res = await fetch("/api/hierarchy/override", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ address, component }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/hierarchy/override failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Reads the discovery manifest the agent skill writes. Deterministic —
+ *  no LLM. `scope` filters to one resource type. */
+export async function fetchExistingResources(
+  signal?: AbortSignal,
+  scope?: string,
+): Promise<ExistingResourcesResponse> {
+  const qs = scope ? `?scope=${encodeURIComponent(scope)}` : "";
+  const res = await fetch(`/api/existing-resources${qs}`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/existing-resources failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Swaps an adopted resource's thin body for apply-clean HCL via
+ *  generate-config-out. Preserves the import block. */
+export async function generateBlueprintConfig(
+  type: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{ type: string; name: string; hcl: string }> {
+  const res = await fetch("/api/blueprint/generate-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type, name }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(
+      `/api/blueprint/generate-config failed (${res.status}): ${text}`,
+    );
+  }
+  return res.json();
+}
+
+/** Create/update a draft (new/adopt/edit/delete) for the current owner. */
+export async function writeDraft(
+  body: DraftRequest,
+  signal?: AbortSignal,
+): Promise<{ address: string; owner: string; hcl: string }> {
+  const res = await fetch("/api/blueprint/draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/draft failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Lists the current owner's pending drafts (for the pending-changes bar). */
+export async function fetchDrafts(
+  signal?: AbortSignal,
+): Promise<DraftsResponse> {
+  const res = await fetch("/api/blueprint/drafts", {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/drafts failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Discard a draft. */
+export async function discardDraft(
+  type: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{ discarded: boolean }> {
+  const res = await fetch(
+    `/api/blueprint/draft/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
+    { method: "DELETE", signal },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`discard draft failed (${res.status}): ${text}`);
   }
   return res.json();
 }

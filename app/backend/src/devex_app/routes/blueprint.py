@@ -26,14 +26,16 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import hcl2
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
+from .. import drafts
 from ..settings import get_settings
-from ..tofu import TofuError, providers_schema
+from ..tofu import TofuError, generate_resource_config, providers_schema
+from ._deps import resolve_owner
 
 router = APIRouter()
 
@@ -59,6 +61,16 @@ AWS_PROVIDER_KEYS = (
 )
 
 
+def _type_meta(type_: str) -> dict[str, str]:
+    """Cosmetic label + family for a type. Curated entries win; anything
+    else gets a humanized label and the generic "other" family so the
+    canvas can still render adopted resources of any type."""
+    if type_ in SUPPORTED_TYPES:
+        return SUPPORTED_TYPES[type_]
+    leaf = type_.removeprefix("aws_").replace("_", " ")
+    return {"label": leaf or type_, "family": "other"}
+
+
 @router.get("/schemas")
 def schemas(
     types: list[str] = Query(default=None),
@@ -74,13 +86,14 @@ def schemas(
     settings = get_settings()
     requested = list(types) if types else list(SUPPORTED_TYPES.keys())
 
-    # Reject unknown types up-front rather than 500'ing later when the
-    # schema lookup misses.
-    unknown = [t for t in requested if t not in SUPPORTED_TYPES]
-    if unknown:
+    # Format-only validation — any valid resource-type identifier is
+    # allowed now (existing-resource adoption can surface any type). Types
+    # missing from the provider schema are simply skipped in the loop below.
+    bad = [t for t in requested if not _DELETE_TYPE_RE.match(t)]
+    if bad:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported resource types: {', '.join(unknown)}",
+            detail=f"Malformed resource type identifiers: {', '.join(bad)}",
         )
 
     try:
@@ -106,7 +119,7 @@ def schemas(
 
     out: dict[str, Any] = {}
     for t in requested:
-        meta = SUPPORTED_TYPES[t]
+        meta = _type_meta(t)
         resource_schema = resources_block.get(t)
         if resource_schema is None:
             # The provider exists but doesn't have this resource type.
@@ -127,32 +140,54 @@ def schemas(
     }
 
 
+# Attributes the user must never author, even though the AWS provider marks
+# them `optional + computed`. `id` is the resource identifier (AWS-assigned;
+# Terraform ignores it in config — the optional flag is a legacy quirk).
+# `tags_all` is the computed merge of `tags` + provider `default_tags`;
+# users edit `tags`. These are surfaced read-only, not dropped.
+_AWS_ASSIGNED_ATTRS = frozenset({"id", "tags_all"})
+
+
 def _normalize_attributes(attrs: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten the provider-schema attribute map into a list the
-    frontend form can render directly. Keeps only the fields the UI
-    cares about; drops sensitive computed-only attributes the user
-    can't set."""
+    frontend form can render directly.
+
+    Every attribute is surfaced — nothing is dropped — but each carries a
+    `read_only` flag so the form knows what the user authors vs. what AWS
+    assigns:
+
+    - `read_only=True`  — pure-computed outputs (`arn`, `region`,
+      `create_date`, …) plus the AWS-assigned `id` / `tags_all`. Shown
+      disabled ("known after apply" when no value yet).
+    - `read_only=False`, `computed=True` — optional-computed (`bucket`,
+      `cidr_block`): editable, but AWS fills it if left blank.
+    - `read_only=False`, `computed=False` — plain required/optional fields.
+    """
     out: list[dict[str, Any]] = []
     for name, info in attrs.items():
-        # `computed_only` attributes (e.g., `arn`, `id`) are surfaced
-        # in the resource state, not authored by the user — skip.
-        if info.get("computed") and not info.get("optional") and not info.get(
-            "required"
-        ):
-            continue
+        required = bool(info.get("required"))
+        optional = bool(info.get("optional"))
+        computed = bool(info.get("computed"))
+        # Read-only = AWS-assigned: pure-computed outputs, or the special
+        # id / tags_all the provider marks optional+computed.
+        read_only = (computed and not optional and not required) or (
+            name in _AWS_ASSIGNED_ATTRS
+        )
         out.append(
             {
                 "name": name,
                 "type": info.get("type"),
                 "description": info.get("description") or "",
-                "required": bool(info.get("required")),
-                "optional": bool(info.get("optional")),
+                "required": required,
+                "optional": optional,
+                "computed": computed,
+                "read_only": read_only,
                 "sensitive": bool(info.get("sensitive")),
                 "deprecated": bool(info.get("deprecated")),
             }
         )
-    # Required first, then alphabetical. The frontend can re-sort.
-    out.sort(key=lambda a: (not a["required"], a["name"]))
+    # Editable first (required, then optional), read-only last; alpha within.
+    out.sort(key=lambda a: (a["read_only"], not a["required"], a["name"]))
     return out
 
 
@@ -250,6 +285,12 @@ class ResourceWriteRequest(BaseModel):
 
     type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
     name: str = Field(..., description="HCL block label, e.g. 'logs'")
+    import_id: str | None = Field(
+        default=None,
+        description="Real cloud id. When set, an `import { to, id }` block is "
+        "emitted above the resource so OpenTofu adopts the existing resource "
+        "instead of creating a new one.",
+    )
     attributes: dict[str, Any] = Field(default_factory=dict)
     blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
     position: dict[str, float] | None = Field(
@@ -260,11 +301,14 @@ class ResourceWriteRequest(BaseModel):
 
     @field_validator("type")
     @classmethod
-    def _type_supported(cls, v: str) -> str:
-        if v not in SUPPORTED_TYPES:
+    def _type_valid(cls, v: str) -> str:
+        # Format-only — adoption of existing resources can surface any
+        # type, so we no longer gate writes to SUPPORTED_TYPES. The
+        # supported list still drives the palette + cosmetics.
+        if not _DELETE_TYPE_RE.match(v):
             raise ValueError(
-                f"Unsupported resource type {v!r}. "
-                f"Supported: {', '.join(SUPPORTED_TYPES)}"
+                f"Invalid resource type identifier {v!r}. "
+                "Must look like aws_s3_bucket."
             )
         return v
 
@@ -278,6 +322,30 @@ class ResourceWriteRequest(BaseModel):
                 "(start with letter or underscore, then letters/digits/_)."
             )
         return v
+
+
+def _read_only_attr_names(type_: str) -> set[str]:
+    """Names of attributes the provider marks read-only (AWS-assigned) for
+    `type_` — pure-computed outputs plus `id` / `tags_all`. Used to keep
+    those values out of authored HCL even when a client (e.g. a rich
+    discovery payload) sends them. Empty set when the schema is
+    unavailable (unknown type / workspace not initialized), in which case
+    we don't filter."""
+    settings = get_settings()
+    try:
+        schema = providers_schema(settings.blueprint_root)
+    except TofuError:
+        return set()
+    provider_schemas = schema.get("provider_schemas") or {}
+    for key in AWS_PROVIDER_KEYS:
+        resources_block = (provider_schemas.get(key) or {}).get(
+            "resource_schemas"
+        ) or {}
+        resource_schema = resources_block.get(type_)
+        if resource_schema:
+            attrs = (resource_schema.get("block") or {}).get("attributes") or {}
+            return {a["name"] for a in _normalize_attributes(attrs) if a["read_only"]}
+    return set()
 
 
 @router.post("/blueprint/resource")
@@ -300,12 +368,27 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
     # subdirectories.
     filename = f"bp.{req.type}.{req.name}.tf"
     path = settings.blueprint_root / filename
-    hcl = _render_resource_block(
+    # Never author AWS-assigned attributes into HCL, even if the caller
+    # sends them (e.g. an adopt with a rich discovery payload). They're
+    # state, not config — surfaced read-only in the UI, not written.
+    read_only = _read_only_attr_names(req.type)
+    authored_attrs = {
+        k: v for k, v in req.attributes.items() if k not in read_only
+    }
+    resource_hcl = _render_resource_block(
         req.type,
         req.name,
-        req.attributes,
+        authored_attrs,
         req.blocks,
     )
+    if req.import_id:
+        hcl = (
+            _render_import_block(req.type, req.name, req.import_id)
+            + "\n"
+            + resource_hcl
+        )
+    else:
+        hcl = resource_hcl
     # Use a temp-write + rename so an interrupted write can't leave a
     # half-formed `.tf` that `tofu validate` would choke on.
     tmp = path.with_suffix(".tf.tmp")
@@ -323,6 +406,15 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
         else str(path),
         "hcl": hcl,
     }
+
+
+def _render_import_block(type_: str, name: str, import_id: str) -> str:
+    """Render an `import { to, id }` block. `to` is a bare resource
+    address; `id` is a quoted, escaped literal. Emitted above the
+    resource so OpenTofu adopts an existing resource instead of creating
+    a duplicate."""
+    escaped = import_id.replace("\\", "\\\\").replace('"', '\\"')
+    return f'import {{\n  to = {type_}.{name}\n  id = "{escaped}"\n}}\n'
 
 
 def _render_resource_block(
@@ -559,6 +651,58 @@ def _merge_layout(
 
 
 # ---------------------------------------------------------------------------
+# POST /api/blueprint/generate-config — clean HCL for an adopted resource
+# ---------------------------------------------------------------------------
+
+
+class GenerateConfigRequest(BaseModel):
+    """Body of POST /api/blueprint/generate-config — the 'generate clean
+    config' action for an adopted resource."""
+
+    type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
+    name: str = Field(..., description="HCL block label")
+
+
+@router.post("/blueprint/generate-config")
+def generate_config(req: GenerateConfigRequest) -> dict[str, Any]:
+    """Replace an adopted resource's thin pre-fill body with apply-clean
+    HCL from `tofu plan -generate-config-out`, preserving its import
+    block. Requires the resource to already exist on disk with an import
+    block (i.e. it was adopted, not authored from scratch)."""
+    settings = get_settings()
+    path = settings.blueprint_root / f"bp.{req.type}.{req.name}.tf"
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No blueprint file for {req.type}.{req.name}.",
+        )
+    parsed = _parse_resource_file(path)
+    import_id = parsed.get("import_id") if parsed else None
+    if not import_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Resource has no import block; nothing to generate from.",
+        )
+    try:
+        generated_block = generate_resource_config(
+            settings.blueprint_root, req.type, req.name, import_id
+        )
+    except TofuError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    hcl = (
+        _render_import_block(req.type, req.name, import_id)
+        + "\n"
+        + generated_block.strip()
+        + "\n"
+    )
+    tmp = path.with_suffix(".tf.tmp")
+    tmp.write_text(hcl, encoding="utf-8")
+    tmp.replace(path)
+    return {"type": req.type, "name": req.name, "hcl": hcl}
+
+
+# ---------------------------------------------------------------------------
 # PATCH /api/blueprint/layout — drag-to-save canvas positions
 # ---------------------------------------------------------------------------
 
@@ -650,6 +794,7 @@ def list_resources() -> dict[str, Any]:
                     "type": type_guess,
                     "name": name_guess,
                     "attributes": {},
+                    "import_id": None,
                     "position": layout.get(
                         f"{type_guess}.{name_guess}",
                         {"x": 0, "y": 0},
@@ -675,6 +820,7 @@ def list_resources() -> dict[str, Any]:
                 "name": name,
                 "attributes": attrs,
                 "blocks": blocks,
+                "import_id": parsed.get("import_id"),
                 "position": layout.get(address, {"x": 0, "y": 0}),
                 "filename": path.name,
             }
@@ -785,7 +931,35 @@ def _parse_resource_file(path: Path) -> dict[str, Any] | None:
     name = _strip_quotes(name_quoted)
     raw_body = inner[name_quoted]
     attrs, blocks = _split_attrs_and_blocks(raw_body)
-    return {"type": type_, "name": name, "attributes": attrs, "blocks": blocks}
+
+    # An adopted resource carries a sibling `import { to, id }` block.
+    # Match it to this resource by its `to` address and surface the id.
+    import_id: str | None = None
+    for imp in parsed.get("import") or []:
+        if _import_to_matches(imp.get("to"), type_, name):
+            raw_id = imp.get("id")
+            import_id = _strip_quotes(str(raw_id)) if raw_id is not None else None
+            break
+
+    return {
+        "type": type_,
+        "name": name,
+        "attributes": attrs,
+        "blocks": blocks,
+        "import_id": import_id,
+    }
+
+
+def _import_to_matches(to: Any, type_: str, name: str) -> bool:
+    """python-hcl2 returns the `to` expression interpolation-wrapped
+    (`${aws_s3_bucket.logs}`) or bare (`aws_s3_bucket.logs`). Normalize
+    both before comparing to `<type>.<name>`."""
+    if not isinstance(to, str):
+        return False
+    bare = to.strip()
+    if bare.startswith("${") and bare.endswith("}"):
+        bare = bare[2:-1].strip()
+    return bare == f"{type_}.{name}"
 
 
 def _split_attrs_and_blocks(
@@ -874,6 +1048,118 @@ def _find_references(attrs: Any) -> list[str]:
 
     walk(attrs)
     return found
+
+
+# ---------------------------------------------------------------------------
+# POST /api/blueprint/draft — owner-scoped draft CRUD
+# ---------------------------------------------------------------------------
+
+
+class DraftRequest(BaseModel):
+    """Body of POST /api/blueprint/draft. `kind` selects the change type;
+    `attributes`/`import_id` seed the HCL for new/adopt/edit; `delete`
+    records a marker only."""
+
+    kind: Literal["new", "adopt", "edit", "delete"]
+    type: str = Field(...)
+    name: str = Field(...)
+    component: str | None = None
+    source_address: str | None = None
+    import_id: str | None = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("type")
+    @classmethod
+    def _type_valid(cls, v: str) -> str:
+        if not _DELETE_TYPE_RE.match(v):
+            raise ValueError(f"Invalid resource type {v!r}")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def _name_valid(cls, v: str) -> str:
+        if not _NAME_RE.match(v):
+            raise ValueError(f"Invalid resource name {v!r}")
+        return v
+
+
+def _component_target_module(component: str | None) -> str | None:
+    if not component:
+        return None
+    slug = component.lower().replace(" ", "_")
+    return f"modules/{slug}"
+
+
+@router.post("/blueprint/draft")
+def write_draft(
+    req: DraftRequest, owner: str = Depends(resolve_owner)
+) -> dict[str, Any]:
+    settings = get_settings()
+    owner_dir = drafts.owner_dir(settings.blueprint_root, owner)
+    owner_dir.mkdir(parents=True, exist_ok=True)
+    address = f"{req.type}.{req.name}"
+    path = owner_dir / f"bp.{req.type}.{req.name}.tf"
+
+    hcl = ""
+    if req.kind == "delete":
+        # Marker only — remove any stale HCL for this address.
+        if path.exists():
+            path.unlink()
+    else:
+        read_only = _read_only_attr_names(req.type)
+        authored = {k: v for k, v in req.attributes.items() if k not in read_only}
+        if req.component:
+            tags = dict(authored.get("tags") or {})
+            tags["Component"] = req.component
+            authored = {**authored, "tags": tags}
+        resource_hcl = _render_resource_block(req.type, req.name, authored, {})
+        if req.kind == "adopt" and req.import_id:
+            hcl = (
+                _render_import_block(req.type, req.name, req.import_id)
+                + "\n"
+                + resource_hcl
+            )
+        else:
+            hcl = resource_hcl
+        tmp = path.with_suffix(".tf.tmp")
+        tmp.write_text(hcl, encoding="utf-8")
+        tmp.replace(path)
+
+    entry = {
+        "kind": req.kind,
+        "owner": owner,
+        "component": req.component,
+        "source_address": req.source_address,
+        "target_module": _component_target_module(req.component),
+    }
+    drafts.save_draft_entry(settings.blueprint_root, owner, address, entry)
+    return {"address": address, "owner": owner, "entry": entry, "hcl": hcl}
+
+
+@router.delete("/blueprint/draft/{type_}/{name}")
+def discard_draft(
+    type_: str, name: str, owner: str = Depends(resolve_owner)
+) -> dict[str, Any]:
+    if not _DELETE_TYPE_RE.match(type_) or not _NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid type/name")
+    settings = get_settings()
+    address = f"{type_}.{name}"
+    path = drafts.owner_dir(settings.blueprint_root, owner) / f"bp.{type_}.{name}.tf"
+    if path.exists():
+        path.unlink()
+    drafts.delete_draft_entry(settings.blueprint_root, owner, address)
+    return {"address": address, "owner": owner, "discarded": True}
+
+
+@router.get("/blueprint/drafts")
+def list_drafts(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
+    """List the requesting owner's pending drafts (the pending-changes bar
+    reads this). Each entry is the `_drafts.json` value plus its address."""
+    settings = get_settings()
+    data = drafts.load_drafts(settings.blueprint_root, owner)
+    items = [{"address": address, **entry} for address, entry in data.items()]
+    items.sort(key=lambda d: (str(d.get("component") or "~"), d["address"]))
+    return {"owner": owner, "drafts": items}
 
 
 # ---------------------------------------------------------------------------

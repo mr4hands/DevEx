@@ -69,6 +69,13 @@ export type ResourceAttribute = {
   description: string;
   required: boolean;
   optional: boolean;
+  /** True for optional-computed attributes — the user may set them, but
+   *  AWS fills a value if left blank (e.g. `bucket`, `cidr_block`). */
+  computed: boolean;
+  /** True for AWS-assigned attributes the user must not author: pure
+   *  computed outputs (`arn`, `region`, …) plus `id` / `tags_all`. The
+   *  form shows these disabled ("known after apply" when no value yet). */
+  read_only: boolean;
   sensitive: boolean;
   deprecated: boolean;
 };
@@ -114,6 +121,9 @@ export type SchemasResponse = {
 export type BlueprintResource = {
   type: string;
   name: string;
+  /** Real cloud id when this resource was adopted via an import block;
+   *  null/absent for resources authored from scratch. */
+  import_id?: string | null;
   attributes: Record<string, unknown>;
   /** Nested blocks (`versioning`, `lifecycle_rule`, etc.) when the
    *  resource was successfully parsed. Always present in the response
@@ -133,6 +143,86 @@ export type BlueprintResourcesResponse = {
   blueprint_root: string;
   resources: BlueprintResource[];
   edges: BlueprintEdge[];
+};
+
+/** One discovered (unmanaged) AWS resource in the discovery manifest the
+ *  agent skill writes. Draggable onto the canvas to adopt it. */
+export type ExistingResource = {
+  address: string;
+  type: string;
+  name: string;
+  import_id: string;
+  summary_attributes: Record<string, unknown>;
+};
+
+export type ExistingResourceGroup = {
+  type: string;
+  resources: ExistingResource[];
+};
+
+export type ExistingResourcesResponse = {
+  source: string | null;
+  generated_at: string | null;
+  scopes_loaded: string[];
+  groups: ExistingResourceGroup[];
+  /** Present when there's no manifest yet (cold start). */
+  hint?: string;
+  /** Present when the manifest on disk is malformed. */
+  error?: string;
+};
+
+export type InventoryResource = {
+  address: string;
+  type: string;
+  name: string;
+  id: string | null;
+  arn: string | null;
+  account: string;
+  region: string;
+  managed: boolean;
+  /** "managed" (in tofu state) | "unmanaged" (in AWS, adoptable) |
+   *  "planned" (authored in the blueprint sandbox, not yet applied). */
+  state: "managed" | "unmanaged" | "planned" | string;
+  component: string;
+  component_source: "tag" | "override" | "unassigned" | string;
+  /** When the requesting owner has a draft for this resource, its kind. */
+  draft_kind?: "new" | "adopt" | "edit" | "delete" | null;
+  tags: Record<string, unknown>;
+  values: Record<string, unknown>;
+};
+
+export type DraftRequest = {
+  kind: "new" | "adopt" | "edit" | "delete";
+  type: string;
+  name: string;
+  component?: string | null;
+  source_address?: string | null;
+  import_id?: string | null;
+  attributes?: Record<string, unknown>;
+};
+
+export type Draft = {
+  address: string;
+  kind: "new" | "adopt" | "edit" | "delete";
+  owner?: string;
+  component?: string | null;
+  source_address?: string | null;
+  target_module?: string | null;
+};
+
+export type DraftsResponse = {
+  owner: string;
+  drafts: Draft[];
+};
+
+export type InventoryResponse = {
+  resources: InventoryResource[];
+  components: Record<string, { display_name?: string; target_module?: string }>;
+};
+
+export type Hierarchy = {
+  components: Record<string, { display_name?: string; target_module?: string }>;
+  overrides: Record<string, string>;
 };
 
 export type ChatMessage = {

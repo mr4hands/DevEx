@@ -54,3 +54,8 @@ export const PALETTE: PaletteItem[] = TYPES.map((type) => {
 
 /** MIME type used for HTML5 drag-and-drop on the palette tiles. */
 export const PALETTE_DRAG_TYPE = "application/devex.blueprint.type";
+
+/** MIME type for dragging an existing (discovered/unmanaged) resource from
+ *  the unified tree onto the canvas to adopt it. The canvas's onDrop reads
+ *  this; the payload is `{ type, name, import_id, summary_attributes }`. */
+export const EXISTING_DRAG_TYPE = "application/devex-existing";

@@ -13,5 +13,11 @@ terraform.tfstate.backup
 # or a module) when ready and the canvas writes become safe to delete.
 bp.*.tf
 _layout.json
+# Discovery manifest (agent-written) + the component hierarchy mapping.
+# Per-session/experiment runtime state, not repo-source.
+_discovered.json
+_hierarchy.json
+# Per-owner draft namespaces (bp.*.tf + _drafts.json), runtime state.
+drafts/
 # Legacy pre-flat layout (migrated to bp.*.tf on first list).
 resources/
