@@ -18,6 +18,7 @@ from fastapi import APIRouter
 from ..inventory import account_region, classify_component
 from ..settings import get_settings
 from ..tofu import TofuError, resources_from_state, show_state
+from .blueprint import list_resources
 
 router = APIRouter()
 
@@ -63,6 +64,7 @@ def inventory() -> dict[str, Any]:
             "account": account,
             "region": region,
             "managed": True,
+            "state": "managed",
             "component": component,
             "component_source": source,
             "tags": tags,
@@ -90,10 +92,40 @@ def inventory() -> dict[str, Any]:
                 "account": account,
                 "region": region,
                 "managed": False,
+                "state": "unmanaged",
                 "component": component,
                 "component_source": source,
                 "tags": tags,
                 "values": summary,
             }
+
+    # Planned resources authored in the blueprint sandbox (bp.*.tf) — not
+    # yet applied or discovered, but classified by their Component tag so a
+    # just-added resource shows under its component immediately.
+    for res in (list_resources().get("resources") or []):
+        address = f"{res['type']}.{res['name']}"
+        import_id = res.get("import_id")
+        key = import_id or f"bp:{address}"
+        if key in items:
+            continue
+        attrs = res.get("attributes") or {}
+        tags = attrs.get("tags") or {}
+        component, source = classify_component(tags, address, overrides)
+        account, region = account_region(attrs)
+        items[key] = {
+            "address": address,
+            "type": res["type"],
+            "name": res["name"],
+            "id": import_id,
+            "arn": attrs.get("arn"),
+            "account": account,
+            "region": region,
+            "managed": False,
+            "state": "planned",
+            "component": component,
+            "component_source": source,
+            "tags": tags,
+            "values": attrs,
+        }
 
     return {"resources": list(items.values()), "components": components}
