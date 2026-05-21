@@ -16,7 +16,9 @@ import {
 } from "@/lib/api";
 import type { PlanDiffResponse, Resource, ResourceChange } from "@/lib/types";
 
-type MiddleTab = "list" | "plan" | "blueprint";
+// The work surface (center) toggles between the blueprint canvas and the
+// plan-diff. The resource tree is now a persistent navigator, not a tab.
+type WorkTab = "canvas" | "plan";
 
 // Prompt seeded into the chat by the Blueprint "commit to PR" button.
 // The agent has the repo + Bash + the opentofu-* skills, so it can do
@@ -30,11 +32,13 @@ The Blueprint canvas authored resources as sandbox files at the root of
 
 1. Read every \`live/blueprint/bp.*.tf\` to understand the resources and
    their relationships (references between them are dependency edges).
-2. Extract them into a clean, reusable module under \`modules/<name>/\`,
+2. Group the resources by their \`Component\` tag and extract each group
+   into its own clean, reusable module under \`modules/<component>/\`
+   (resources with no Component tag go in a sensibly-named module),
    following the opentofu-style-guide skill: proper file layout
    (versions.tf / variables.tf / main.tf / outputs.tf), typed +
    described variables for anything that should be caller-configurable,
-   described outputs, and a day-one \`tests/plan.tftest.hcl\`.
+   described outputs, and a day-one \`tests/plan.tftest.hcl\` per module.
 3. Wire the module into an appropriate live root config with sensible
    inputs.
 4. Run \`tofu fmt\` and \`tofu validate\` until clean.
@@ -80,7 +84,9 @@ export default function Home() {
   // inspector can show + reassign it.
   const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [middleTab, setMiddleTab] = useState<MiddleTab>("list");
+  const [workTab, setWorkTab] = useState<WorkTab>("canvas");
+  // The agent column collapses to a thin strip to give the work surface room.
+  const [agentCollapsed, setAgentCollapsed] = useState(false);
   // Blueprint state lives separately from `selected` because a blueprint
   // node represents a *planned* resource (no AWS state) and has its own
   // attribute form; conflating them would force ResourceDrawer to handle
@@ -129,18 +135,16 @@ export default function Home() {
     [],
   );
 
-  // Hoisted plan-diff state — shared across PlanDiff, ResourceList
-  // (pending indicators), and ResourceDrawer (in-plan strip + change).
+  // Hoisted plan-diff state — shared across PlanDiff and ResourceDrawer
+  // (in-plan strip + change).
   const [planDiff, setPlanDiff] = useState<PlanDiffResponse | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   // When the user clicks "open in PlanDiff" from the drawer, we route
   // them to the Plan tab + expand that row.
   const [planFocusAddress, setPlanFocusAddress] = useState<string | null>(null);
-  // Which workspace the Plan tab is currently looking at. The
-  // ResourceList (pending indicators) follows whatever's set here so
-  // the two views stay in sync; flipping to "blueprint" surfaces the
-  // canvas's `live/blueprint/` workspace in both places.
+  // Which workspace the Plan tab is currently looking at. Flipping to
+  // "blueprint" surfaces the canvas's `live/blueprint/` workspace.
   const [planRoot, setPlanRoot] = useState<PlanRoot>("default");
   const planAbortRef = useRef<AbortController | null>(null);
 
@@ -175,12 +179,11 @@ export default function Home() {
   const onToolResult = useCallback(() => {
     // Refresh on every tool result — agent may have mutated state.
     //
-    // - `refreshKey` re-fetches the ResourceList (live state).
+    // - `refreshKey` re-fetches the unified resource tree (inventory).
     // - `blueprintReload` re-fetches the Blueprint canvas. The chat
-    //   agent's `Edit`/`Write` tools can land HCL in
-    //   `live/blueprint/resources/`; bumping this here is what makes
-    //   AI-placed resources show up on the canvas without manual
-    //   refresh — the whole point of the Blueprint AI integration.
+    //   agent's `Edit`/`Write` tools land HCL in `live/blueprint/`;
+    //   bumping this here is what makes AI-placed resources show up on
+    //   the canvas without a manual refresh.
     // - Plan tab does NOT auto-refresh; `tofu plan` is slow and a
     //   single agent turn often runs many tools. User re-triggers
     //   explicitly via "run plan".
@@ -203,7 +206,7 @@ export default function Home() {
 
   const openInPlanDiff = useCallback((r: Resource) => {
     setPlanFocusAddress(r.address);
-    setMiddleTab("plan");
+    setWorkTab("plan");
   }, []);
 
   // Persist a component override, then refresh the tree so the resource
@@ -227,40 +230,65 @@ export default function Home() {
 
   return (
     <main className="flex flex-1 min-h-0 h-screen">
-      <aside className="w-[360px] shrink-0 border-r border-border flex flex-col min-h-0">
-        <ChatPanel
-          onToolResult={onToolResult}
-          contextResource={selected}
-          onClearContext={() => setSelected(null)}
-          pendingPrompt={pendingPrompt}
-          onPendingConsumed={() => setPendingPrompt(null)}
+      {/* Region 1 — Agent (collapsible) */}
+      {agentCollapsed ? (
+        <aside className="w-[40px] shrink-0 border-r border-border flex flex-col items-center pt-2">
+          <button
+            type="button"
+            onClick={() => setAgentCollapsed(false)}
+            title="Expand agent"
+            className="h-7 w-7 inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted rounded-sm"
+          >
+            ›
+          </button>
+          <span className="mt-2 text-[10px] uppercase tracking-wide text-muted-foreground [writing-mode:vertical-rl]">
+            agent
+          </span>
+        </aside>
+      ) : (
+        <aside className="w-[320px] shrink-0 border-r border-border flex flex-col min-h-0">
+          <div className="flex items-center justify-between px-2 h-7 border-b border-border shrink-0">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground pl-1">
+              agent
+            </span>
+            <button
+              type="button"
+              onClick={() => setAgentCollapsed(true)}
+              title="Collapse agent"
+              className="h-6 w-6 inline-flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted rounded-sm"
+            >
+              ‹
+            </button>
+          </div>
+          <ChatPanel
+            onToolResult={onToolResult}
+            contextResource={selected}
+            onClearContext={() => setSelected(null)}
+            pendingPrompt={pendingPrompt}
+            onPendingConsumed={() => setPendingPrompt(null)}
+          />
+        </aside>
+      )}
+
+      {/* Region 2 — Resource tree (persistent navigator) */}
+      <aside className="w-[260px] shrink-0 border-r border-border flex flex-col min-h-0">
+        <ResourceTree
+          selected={selected}
+          onSelect={(r, c) => {
+            setSelected(r);
+            setSelectedComponent(c);
+            setBlueprintNode(null);
+          }}
+          onAddToComponent={(c) => setPendingPrompt(addToComponentPrompt(c))}
+          onDiscover={(scope) => setPendingPrompt(discoveryPrompt(scope))}
+          refreshKey={refreshKey}
         />
       </aside>
+
+      {/* Region 3 — Work surface (canvas / plan diff) */}
       <section className="flex-1 min-w-0 flex flex-col min-h-0">
-        <TabBar value={middleTab} onChange={setMiddleTab} />
-        {middleTab === "list" && (
-          <ResourceTree
-            selected={selected}
-            onSelect={(r, c) => {
-              setSelected(r);
-              setSelectedComponent(c);
-            }}
-            onAddToComponent={(c) => setPendingPrompt(addToComponentPrompt(c))}
-            refreshKey={refreshKey}
-          />
-        )}
-        {middleTab === "plan" && (
-          <PlanDiff
-            diff={planDiff}
-            loading={planLoading}
-            error={planError}
-            onRunPlan={runPlan}
-            focusAddress={planFocusAddress}
-            root={planRoot}
-            onRootChange={setPlanRoot}
-          />
-        )}
-        {middleTab === "blueprint" && (
+        <WorkTabBar value={workTab} onChange={setWorkTab} />
+        {workTab === "canvas" && (
           <BlueprintCanvas
             selectedNodeId={blueprintNode?.id ?? null}
             onSelectNode={setBlueprintNode}
@@ -271,14 +299,28 @@ export default function Home() {
             panToAddress={blueprintPanTo}
             onPanConsumed={() => setBlueprintPanTo(null)}
             onCommitToPR={handleCommitToPR}
-            existingReloadKey={blueprintReload}
-            onDiscover={(scope) => setPendingPrompt(discoveryPrompt(scope))}
-            onAdopted={() => setBlueprintReload((k) => k + 1)}
+            onAdopted={() => {
+              setBlueprintReload((k) => k + 1);
+              setRefreshKey((k) => k + 1);
+            }}
+          />
+        )}
+        {workTab === "plan" && (
+          <PlanDiff
+            diff={planDiff}
+            loading={planLoading}
+            error={planError}
+            onRunPlan={runPlan}
+            focusAddress={planFocusAddress}
+            root={planRoot}
+            onRootChange={setPlanRoot}
           />
         )}
       </section>
-      <aside className="w-[420px] shrink-0 border-l border-border flex flex-col min-h-0">
-        {middleTab === "blueprint" ? (
+
+      {/* Region 4 — Inspector */}
+      <aside className="w-[380px] shrink-0 border-l border-border flex flex-col min-h-0">
+        {blueprintNode ? (
           <BlueprintNodeDrawer
             node={blueprintNode}
             onClose={() => setBlueprintNode(null)}
@@ -314,25 +356,21 @@ export default function Home() {
   );
 }
 
-function TabBar({
+function WorkTabBar({
   value,
   onChange,
 }: {
-  value: MiddleTab;
-  onChange: (next: MiddleTab) => void;
+  value: WorkTab;
+  onChange: (next: WorkTab) => void;
 }) {
   return (
     <div className="flex items-center gap-1 px-3 h-8 border-b border-border bg-background shrink-0">
-      <TabButton active={value === "list"} onClick={() => onChange("list")}>
-        list
+      <TabButton active={value === "canvas"} onClick={() => onChange("canvas")}>
+        canvas
       </TabButton>
       <span className="text-border text-[10px]">|</span>
       <TabButton active={value === "plan"} onClick={() => onChange("plan")}>
         plan diff
-      </TabButton>
-      <span className="text-border text-[10px]">|</span>
-      <TabButton active={value === "blueprint"} onClick={() => onChange("blueprint")}>
-        blueprint
       </TabButton>
     </div>
   );

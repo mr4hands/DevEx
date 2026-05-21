@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { fetchInventory } from "@/lib/api";
+import { EXISTING_DRAG_TYPE } from "@/lib/blueprintPalette";
 import { FAMILY_CLASSES, familyOf } from "@/lib/resourceFamilies";
 import type { InventoryResource, Resource } from "@/lib/types";
 
@@ -70,6 +71,7 @@ export function ResourceTree({
   selected,
   onSelect,
   onAddToComponent,
+  onDiscover,
   refreshKey,
 }: {
   selected: Resource | null;
@@ -77,6 +79,9 @@ export function ResourceTree({
   /** Fired by a component node's "+add" button — the parent seeds an agent
    *  prompt to add resources to that component. */
   onAddToComponent?: (component: string) => void;
+  /** Fired by the "discover" button — the parent seeds an agent run that
+   *  enumerates AWS and writes the discovery manifest. */
+  onDiscover?: (scope: string) => void;
   refreshKey?: number;
 }) {
   const [items, setItems] = useState<InventoryResource[]>([]);
@@ -120,14 +125,26 @@ export function ResourceTree({
         <span className="text-muted-foreground">
           {loading ? "…" : `${items.length} resources`}
         </span>
-        <button
-          type="button"
-          className="px-1.5 h-5 rounded-sm font-mono text-[10px] text-muted-foreground hover:bg-muted"
-          onClick={() => load()}
-          disabled={loading}
-        >
-          refresh
-        </button>
+        <div className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+          {onDiscover && (
+            <button
+              type="button"
+              className="px-1.5 h-5 rounded-sm hover:bg-muted"
+              title="Ask the agent to discover unmanaged AWS resources"
+              onClick={() => onDiscover("all")}
+            >
+              discover
+            </button>
+          )}
+          <button
+            type="button"
+            className="px-1.5 h-5 rounded-sm hover:bg-muted"
+            onClick={() => load()}
+            disabled={loading}
+          >
+            refresh
+          </button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0 text-[11px]">
         {error && (
@@ -261,14 +278,36 @@ function ResourceRow({
 }) {
   const meta = familyOf(item.type);
   const classes = FAMILY_CLASSES[meta.family];
+  // Unmanaged resources can be dragged onto the canvas to adopt them
+  // (import). Managed/planned rows aren't adoptable, so they don't drag.
+  const adoptable = item.state === "unmanaged" && !!item.id;
+  const onDragStart = (e: React.DragEvent) => {
+    e.dataTransfer.setData(
+      EXISTING_DRAG_TYPE,
+      JSON.stringify({
+        type: item.type,
+        name: item.name,
+        import_id: item.id,
+        summary_attributes: item.values,
+      }),
+    );
+    e.dataTransfer.effectAllowed = "copy";
+  };
   return (
     <button
       type="button"
       onClick={onSelect}
+      draggable={adoptable}
+      onDragStart={adoptable ? onDragStart : undefined}
+      title={
+        adoptable
+          ? `Drag onto the canvas to adopt ${item.address}`
+          : item.address
+      }
       style={{ paddingLeft: 56 }}
       className={`w-full flex items-center gap-2 h-6 pr-2 text-left border-b border-border font-mono ${
         selected ? "bg-amber-50/60 dark:bg-amber-950/30" : "hover:bg-muted"
-      }`}
+      } ${adoptable ? "cursor-grab active:cursor-grabbing" : ""}`}
     >
       <span className={`w-[2px] self-stretch my-1 ${classes.rail}`} />
       <span className="truncate flex-1">{item.name}</span>

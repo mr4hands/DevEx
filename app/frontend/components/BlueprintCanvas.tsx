@@ -42,14 +42,11 @@ import {
   familyOf,
 } from "@/lib/resourceFamilies";
 import {
+  EXISTING_DRAG_TYPE,
   PALETTE,
   PALETTE_DRAG_TYPE,
   type PaletteItem,
 } from "@/lib/blueprintPalette";
-import {
-  ExistingResourceTree,
-  EXISTING_DRAG_TYPE,
-} from "@/components/ExistingResourceTree";
 import type {
   BlueprintBlockInstance,
   BlueprintEdge,
@@ -114,8 +111,6 @@ export function BlueprintCanvas({
   panToAddress,
   onPanConsumed,
   onCommitToPR,
-  existingReloadKey,
-  onDiscover,
   onAdopted,
 }: {
   selectedNodeId: string | null;
@@ -145,13 +140,8 @@ export function BlueprintCanvas({
    *  prompt that drives the agent to promote the blueprint into a
    *  reviewable PR. */
   onCommitToPR?: () => void;
-  /** Bumped to refetch the existing-resources tree (e.g. after a
-   *  discovery tool-result lands a new manifest). */
-  existingReloadKey?: number;
-  /** Seed an agent discovery run for a scope ("all" or a type). */
-  onDiscover?: (scope: string) => void;
-  /** Called after an adopt-drop persists the import file, so the parent
-   *  can bump the canvas reload + refetch. */
+  /** Called after an adopt-drop (drag from the unified tree) persists the
+   *  import file, so the parent can refresh the canvas + the tree. */
   onAdopted?: () => void;
 }) {
   return (
@@ -166,8 +156,6 @@ export function BlueprintCanvas({
         panToAddress={panToAddress}
         onPanConsumed={onPanConsumed}
         onCommitToPR={onCommitToPR}
-        existingReloadKey={existingReloadKey}
-        onDiscover={onDiscover}
         onAdopted={onAdopted}
       />
     </ReactFlowProvider>
@@ -184,8 +172,6 @@ function CanvasInner({
   panToAddress,
   onPanConsumed,
   onCommitToPR,
-  existingReloadKey,
-  onDiscover,
   onAdopted,
 }: {
   selectedNodeId: string | null;
@@ -197,8 +183,6 @@ function CanvasInner({
   panToAddress?: string | null;
   onPanConsumed?: () => void;
   onCommitToPR?: () => void;
-  existingReloadKey?: number;
-  onDiscover?: (scope: string) => void;
   onAdopted?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
@@ -550,10 +534,6 @@ function CanvasInner({
 
   return (
     <div className="flex-1 min-h-0 flex">
-      <ExistingResourceTree
-        reloadKey={existingReloadKey}
-        onDiscover={onDiscover ?? (() => {})}
-      />
       <Palette />
       <div ref={wrapperRef} className="flex-1 min-w-0 relative">
         <ReactFlow
