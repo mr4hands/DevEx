@@ -106,6 +106,32 @@ commit (do NOT commit the \`drafts/\` sandbox), push, open a PR with
 \`gh pr create --fill\`, and report the URL. Do not run \`tofu apply\`.`;
 }
 
+// Prompt seeded into the chat by the Blueprint "commit to PR" button.
+// The agent has the repo + Bash + the opentofu-* skills, so it can do
+// the cleanup + git + PR itself. Kept terse but explicit about the
+// non-negotiables: promote to a module, don't commit the bp.* sandbox
+// files, don't apply, report the PR URL.
+const BLUEPRINT_COMMIT_PROMPT = `Promote the current blueprint into a reviewable PR.
+
+The Blueprint canvas authored resources as sandbox files at the root of
+\`live/blueprint/\`, named \`bp.<type>.<name>.tf\`. Please:
+
+1. Read every \`live/blueprint/bp.*.tf\` to understand the resources and
+   their relationships (references between them are dependency edges).
+2. Extract them into a clean, reusable module under \`modules/<name>/\`,
+   following the opentofu-style-guide skill: proper file layout
+   (versions.tf / variables.tf / main.tf / outputs.tf), typed +
+   described variables for anything that should be caller-configurable,
+   described outputs, and a day-one \`tests/plan.tftest.hcl\`.
+3. Wire the module into an appropriate live root config with sensible
+   inputs.
+4. Run \`tofu fmt\` and \`tofu validate\` until clean.
+5. Create a branch, commit (do NOT commit the \`bp.*.tf\` sandbox files
+   or \`_layout.json\`), push, and open a PR with \`gh pr create --fill\`.
+6. Report the PR URL back here.
+
+Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
+
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
   // Full inventory row for the tree selection — drives the unified inspector
