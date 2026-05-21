@@ -200,10 +200,15 @@ export function BlueprintNodeDrawer({
     if (!node || !formState || !schema) return;
     setSaveState({ status: "saving" });
     try {
-      // Strip undefined / empty-string values — the backend filters
-      // them anyway, but we'd rather not POST a payload full of nulls.
+      // Only persist editable schema attributes. Imported/generated
+      // resources seed the form from disk, which can include AWS-filled
+      // values (id, tags_all, arn, …) that aren't editable fields —
+      // writing those back into HCL would be wrong, so drop anything not
+      // in the schema. Also strip undefined / empty-string values.
+      const editableNames = new Set(schema.attributes.map((a) => a.name));
       const cleanAttrs: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(formState.attrs)) {
+        if (!editableNames.has(k)) continue;
         if (v === undefined || v === null) continue;
         if (typeof v === "string" && v.trim() === "") continue;
         cleanAttrs[k] = v;
@@ -603,11 +608,14 @@ function FieldRow({
   label,
   description,
   required,
+  computed,
   children,
 }: {
   label: string;
   description?: string;
   required?: boolean;
+  /** Optional-computed: editable, but AWS fills it if left blank. */
+  computed?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -619,6 +627,14 @@ function FieldRow({
         {required && (
           <span className="text-[9px] font-mono text-amber-700 dark:text-amber-400">
             req
+          </span>
+        )}
+        {computed && !required && (
+          <span
+            title="AWS fills this in if you leave it blank"
+            className="text-[9px] font-mono text-sky-600 dark:text-sky-400"
+          >
+            auto
           </span>
         )}
       </div>
@@ -672,6 +688,7 @@ function AttrInput({
         (attr.sensitive ? "sensitive — values are stored in plain HCL" : "")
       }
       required={attr.required}
+      computed={attr.computed}
     >
       <div className="flex items-stretch gap-1">
         {kind === "bool" && (

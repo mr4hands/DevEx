@@ -69,6 +69,10 @@ export type ResourceAttribute = {
   description: string;
   required: boolean;
   optional: boolean;
+  /** True for optional-computed attributes — the user may set them, but
+   *  AWS fills a value if left blank (e.g. `bucket`, `cidr_block`).
+   *  Pure-computed outputs and AWS-assigned ids are dropped server-side. */
+  computed: boolean;
   sensitive: boolean;
   deprecated: boolean;
 };

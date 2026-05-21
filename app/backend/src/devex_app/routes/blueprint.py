@@ -138,15 +138,28 @@ def schemas(
     }
 
 
+# Attributes a user must never author, even though the AWS provider marks
+# them `optional + computed`. `id` is the resource identifier (AWS-assigned;
+# Terraform ignores it in config — the optional flag is a legacy quirk).
+# `tags_all` is the computed merge of `tags` + provider `default_tags`;
+# users edit `tags`. Surfacing these as editable fields is misleading and
+# writing them into HCL is wrong, so they're dropped from the form schema.
+_NON_AUTHORABLE_ATTRS = frozenset({"id", "tags_all"})
+
+
 def _normalize_attributes(attrs: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten the provider-schema attribute map into a list the
-    frontend form can render directly. Keeps only the fields the UI
-    cares about; drops sensitive computed-only attributes the user
-    can't set."""
+    frontend form can render directly. Drops attributes the user can't
+    or shouldn't author (pure-computed outputs like `arn`, plus the
+    AWS-assigned `id` / `tags_all`), and surfaces the `computed` flag so
+    the form can label optional-computed fields as 'AWS fills if blank'."""
     out: list[dict[str, Any]] = []
     for name, info in attrs.items():
-        # `computed_only` attributes (e.g., `arn`, `id`) are surfaced
-        # in the resource state, not authored by the user — skip.
+        # AWS-assigned identifiers — never authored (see above).
+        if name in _NON_AUTHORABLE_ATTRS:
+            continue
+        # Pure-computed outputs (`arn`, `region`, `create_date`, …) are
+        # state, not config — the user can't set them.
         if info.get("computed") and not info.get("optional") and not info.get(
             "required"
         ):
@@ -158,6 +171,10 @@ def _normalize_attributes(attrs: dict[str, Any]) -> list[dict[str, Any]]:
                 "description": info.get("description") or "",
                 "required": bool(info.get("required")),
                 "optional": bool(info.get("optional")),
+                # Optional-computed (e.g. `bucket`, `cidr_block`): the user
+                # may set it, but AWS fills it if left blank. The form uses
+                # this to label the field.
+                "computed": bool(info.get("computed")),
                 "sensitive": bool(info.get("sensitive")),
                 "deprecated": bool(info.get("deprecated")),
             }
