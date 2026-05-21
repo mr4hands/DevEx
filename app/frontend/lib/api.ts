@@ -2,6 +2,7 @@ import type {
   BlueprintResourcesResponse,
   ChatMessage,
   ExistingResourcesResponse,
+  InventoryResponse,
   PlanDiffResponse,
   PlanResponse,
   SchemasResponse,
@@ -136,6 +137,19 @@ export async function writeBlueprintResource(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/blueprint/resource failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Unified resource inventory (managed + unmanaged), classified by
+ *  account/region/component. The tree groups this client-side. */
+export async function fetchInventory(
+  signal?: AbortSignal,
+): Promise<InventoryResponse> {
+  const res = await fetch("/api/inventory", { cache: "no-store", signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/inventory failed (${res.status}): ${text}`);
   }
   return res.json();
 }

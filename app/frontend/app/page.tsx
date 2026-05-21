@@ -7,7 +7,7 @@ import { BlueprintNodeDrawer } from "@/components/BlueprintNodeDrawer";
 import { ChatPanel } from "@/components/ChatPanel";
 import { PlanDiff } from "@/components/PlanDiff";
 import { ResourceDrawer } from "@/components/ResourceDrawer";
-import { ResourceList } from "@/components/ResourceList";
+import { ResourceTree } from "@/components/ResourceTree";
 import {
   deleteBlueprintResource,
   fetchPlanDiff,
@@ -180,14 +180,6 @@ export default function Home() {
     return m;
   }, [planDiff]);
 
-  const pendingByAddress = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const [addr, change] of changesByAddress) {
-      m.set(addr, change.action_kind);
-    }
-    return m;
-  }, [changesByAddress]);
-
   const selectedChange = selected
     ? changesByAddress.get(selected.address) ?? null
     : null;
@@ -219,11 +211,10 @@ export default function Home() {
       <section className="flex-1 min-w-0 flex flex-col min-h-0">
         <TabBar value={middleTab} onChange={setMiddleTab} />
         {middleTab === "list" && (
-          <ResourceList
+          <ResourceTree
             selected={selected}
             onSelect={setSelected}
             refreshKey={refreshKey}
-            pendingByAddress={pendingByAddress}
           />
         )}
         {middleTab === "plan" && (

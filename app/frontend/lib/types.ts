@@ -171,6 +171,26 @@ export type ExistingResourcesResponse = {
   error?: string;
 };
 
+export type InventoryResource = {
+  address: string;
+  type: string;
+  name: string;
+  id: string | null;
+  arn: string | null;
+  account: string;
+  region: string;
+  managed: boolean;
+  component: string;
+  component_source: "tag" | "override" | "unassigned" | string;
+  tags: Record<string, unknown>;
+  values: Record<string, unknown>;
+};
+
+export type InventoryResponse = {
+  resources: InventoryResource[];
+  components: Record<string, { display_name?: string; target_module?: string }>;
+};
+
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
