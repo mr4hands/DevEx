@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routes import blueprint, chat, existing, inventory, plan
+from .routes import blueprint, chat, existing, hierarchy, inventory, plan
 from .settings import get_settings
 
 
@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
     app.include_router(blueprint.router, prefix="/api")
     app.include_router(existing.router, prefix="/api")
     app.include_router(inventory.router, prefix="/api")
+    app.include_router(hierarchy.router, prefix="/api")
     return app
 
 
