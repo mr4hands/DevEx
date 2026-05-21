@@ -108,12 +108,22 @@ export function ResourceInspector({
         if (typeof v === "string" && v.trim() === "") continue;
         clean[k] = v;
       }
+      // Preserve the resource's existing draft kind (a `new`/`adopt`/`edit`
+      // draft stays that kind on re-save). Only fall back to deriving it
+      // from state for a resource that isn't a draft yet.
+      const existing = item.draft_kind;
+      const kind: "new" | "adopt" | "edit" =
+        existing === "new" || existing === "adopt" || existing === "edit"
+          ? existing
+          : isUnmanaged
+            ? "adopt"
+            : "edit";
       await writeDraft({
-        kind: isUnmanaged ? "adopt" : "edit",
+        kind,
         type: item.type,
         name: item.name,
         source_address: item.address,
-        import_id: isUnmanaged ? (item.id ?? undefined) : undefined,
+        import_id: kind === "adopt" ? (item.id ?? undefined) : undefined,
         component: item.component,
         attributes: clean,
       });
