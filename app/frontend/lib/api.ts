@@ -1,6 +1,7 @@
 import type {
   BlueprintResourcesResponse,
   ChatMessage,
+  DraftRequest,
   ExistingResourcesResponse,
   Hierarchy,
   InventoryResponse,
@@ -221,6 +222,41 @@ export async function generateBlueprintConfig(
     throw new Error(
       `/api/blueprint/generate-config failed (${res.status}): ${text}`,
     );
+  }
+  return res.json();
+}
+
+/** Create/update a draft (new/adopt/edit/delete) for the current owner. */
+export async function writeDraft(
+  body: DraftRequest,
+  signal?: AbortSignal,
+): Promise<{ address: string; owner: string; hcl: string }> {
+  const res = await fetch("/api/blueprint/draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/draft failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Discard a draft. */
+export async function discardDraft(
+  type: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<{ discarded: boolean }> {
+  const res = await fetch(
+    `/api/blueprint/draft/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
+    { method: "DELETE", signal },
+  );
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`discard draft failed (${res.status}): ${text}`);
   }
   return res.json();
 }

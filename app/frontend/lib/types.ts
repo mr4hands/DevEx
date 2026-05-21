@@ -185,8 +185,20 @@ export type InventoryResource = {
   state: "managed" | "unmanaged" | "planned" | string;
   component: string;
   component_source: "tag" | "override" | "unassigned" | string;
+  /** When the requesting owner has a draft for this resource, its kind. */
+  draft_kind?: "new" | "adopt" | "edit" | "delete" | null;
   tags: Record<string, unknown>;
   values: Record<string, unknown>;
+};
+
+export type DraftRequest = {
+  kind: "new" | "adopt" | "edit" | "delete";
+  type: string;
+  name: string;
+  component?: string | null;
+  source_address?: string | null;
+  import_id?: string | null;
+  attributes?: Record<string, unknown>;
 };
 
 export type InventoryResponse = {
