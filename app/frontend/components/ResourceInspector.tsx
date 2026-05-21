@@ -135,6 +135,26 @@ export function ResourceInspector({
     }
   }, [item, onChanged]);
 
+  // View-mode delete: discard a pending draft, else (managed) propose a
+  // destroy as a `delete` draft. Unmanaged-with-no-draft has nothing to
+  // delete.
+  const hasDraft = !!item.draft_kind;
+  const canDelete = hasDraft || item.managed;
+  const deleteResource = useCallback(async () => {
+    if (hasDraft) {
+      await discardDraft(item.type, item.name);
+    } else if (item.managed) {
+      await writeDraft({
+        kind: "delete",
+        type: item.type,
+        name: item.name,
+        source_address: item.address,
+        component: item.component,
+      });
+    }
+    onChanged();
+  }, [hasDraft, item, onChanged]);
+
   if (!editing) {
     return (
       <ResourceDrawer
@@ -146,6 +166,10 @@ export function ResourceInspector({
         onReassign={onReassign}
         onEdit={enterEdit}
         editLabel={isUnmanaged ? "Adopt & edit" : "Edit"}
+        onDelete={canDelete ? () => void deleteResource() : undefined}
+        deleteLabel={
+          hasDraft ? "Discard draft" : "Delete (propose destroy)"
+        }
       />
     );
   }

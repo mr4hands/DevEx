@@ -40,6 +40,8 @@ export function ResourceDrawer({
   onReassign,
   onEdit,
   editLabel,
+  onDelete,
+  deleteLabel,
 }: {
   resource: Resource | null;
   /** Pending change for this resource, indexed by address by the parent
@@ -58,6 +60,10 @@ export function ResourceDrawer({
    *  flip into edit-as-draft mode). */
   onEdit?: () => void;
   editLabel?: string;
+  /** When set, the header shows a destructive Delete button (propose
+   *  destroy for managed, discard draft for planned). */
+  onDelete?: () => void;
+  deleteLabel?: string;
 }) {
   if (!resource) return <EmptyDrawer />;
 
@@ -71,6 +77,8 @@ export function ResourceDrawer({
       onReassign={onReassign}
       onEdit={onEdit}
       editLabel={editLabel}
+      onDelete={onDelete}
+      deleteLabel={deleteLabel}
     />
   );
 }
@@ -97,6 +105,8 @@ function DrawerBody({
   onReassign,
   onEdit,
   editLabel,
+  onDelete,
+  deleteLabel,
 }: {
   resource: Resource;
   change: ChangeSummary | null;
@@ -106,6 +116,8 @@ function DrawerBody({
   onReassign?: (address: string, component: string) => Promise<void> | void;
   onEdit?: () => void;
   editLabel?: string;
+  onDelete?: () => void;
+  deleteLabel?: string;
 }) {
   const leafChanges = useMemo(
     () => (change ? expandChanges(change.before, change.after) : []),
@@ -191,6 +203,16 @@ function DrawerBody({
               className="shrink-0 h-6 px-2 inline-flex items-center justify-center text-[11px] font-medium rounded-sm bg-accent text-white hover:opacity-90 transition-colors"
             >
               {editLabel ?? "Edit"}
+            </button>
+          )}
+          {onDelete && (
+            <button
+              type="button"
+              onClick={onDelete}
+              title={deleteLabel ?? "Delete"}
+              className="shrink-0 h-6 px-2 inline-flex items-center justify-center text-[11px] font-medium rounded-sm border border-border text-foreground hover:bg-muted hover:border-red-300 dark:hover:border-red-800 transition-colors"
+            >
+              {deleteLabel ?? "Delete"}
             </button>
           )}
           <button
