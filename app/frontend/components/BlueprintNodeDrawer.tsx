@@ -77,6 +77,7 @@ export function BlueprintNodeDrawer({
   >({});
   const [search, setSearch] = useState("");
   const [showAll, setShowAll] = useState(false);
+  const [showComputed, setShowComputed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>({ status: "idle" });
 
   const nodeKey = node?.id ?? null;
@@ -201,11 +202,13 @@ export function BlueprintNodeDrawer({
     setSaveState({ status: "saving" });
     try {
       // Only persist editable schema attributes. Imported/generated
-      // resources seed the form from disk, which can include AWS-filled
-      // values (id, tags_all, arn, …) that aren't editable fields —
-      // writing those back into HCL would be wrong, so drop anything not
-      // in the schema. Also strip undefined / empty-string values.
-      const editableNames = new Set(schema.attributes.map((a) => a.name));
+      // resources seed the form from disk, which can include AWS-assigned
+      // values (id, tags_all, arn, …) that are read-only — writing those
+      // back into HCL would be wrong, so drop anything not editable. Also
+      // strip undefined / empty-string values.
+      const editableNames = new Set(
+        schema.attributes.filter((a) => !a.read_only).map((a) => a.name),
+      );
       const cleanAttrs: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(formState.attrs)) {
         if (!editableNames.has(k)) continue;
@@ -257,11 +260,19 @@ export function BlueprintNodeDrawer({
   }, [node, onResourceDeleted]);
 
   const requiredAttrs = useMemo(
-    () => schema?.attributes.filter((a) => a.required) ?? [],
+    () => schema?.attributes.filter((a) => a.required && !a.read_only) ?? [],
     [schema],
   );
   const optionalAttrs = useMemo(
-    () => schema?.attributes.filter((a) => !a.required && !a.deprecated) ?? [],
+    () =>
+      schema?.attributes.filter(
+        (a) => !a.required && !a.deprecated && !a.read_only,
+      ) ?? [],
+    [schema],
+  );
+  // AWS-assigned attributes — shown disabled, never written.
+  const readOnlyAttrs = useMemo(
+    () => schema?.attributes.filter((a) => a.read_only) ?? [],
     [schema],
   );
   const filteredOptional = useMemo(() => {
@@ -448,6 +459,40 @@ export function BlueprintNodeDrawer({
               </section>
             )}
 
+            {/* Set by AWS — read-only. Shown so the user can see what
+                AWS assigns (value if known, else "known after apply"),
+                but never editable and never written back. */}
+            {readOnlyAttrs.length > 0 && (
+              <section>
+                <button
+                  type="button"
+                  onClick={() => setShowComputed((v) => !v)}
+                  className="w-full flex items-center justify-between text-left"
+                >
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Set by AWS{" "}
+                    <span className="font-mono text-muted-foreground/80">
+                      ({readOnlyAttrs.length})
+                    </span>
+                  </span>
+                  <span className="text-[10px] font-mono text-muted-foreground">
+                    {showComputed ? "hide" : "show"}
+                  </span>
+                </button>
+                {showComputed && (
+                  <div className="mt-1.5 space-y-2">
+                    {readOnlyAttrs.map((a) => (
+                      <ReadOnlyAttr
+                        key={a.name}
+                        attr={a}
+                        value={formState.attrs[a.name]}
+                      />
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
             {schema.block_types.length > 0 && (
               <section className="border-t border-border pt-3 space-y-2">
                 <SectionHeader
@@ -609,6 +654,7 @@ function FieldRow({
   description,
   required,
   computed,
+  readOnly,
   children,
 }: {
   label: string;
@@ -616,6 +662,8 @@ function FieldRow({
   required?: boolean;
   /** Optional-computed: editable, but AWS fills it if left blank. */
   computed?: boolean;
+  /** AWS-assigned: shown disabled, never written. */
+  readOnly?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -629,7 +677,15 @@ function FieldRow({
             req
           </span>
         )}
-        {computed && !required && (
+        {readOnly && (
+          <span
+            title="Set by AWS — read-only"
+            className="text-[9px] font-mono text-muted-foreground"
+          >
+            aws
+          </span>
+        )}
+        {computed && !required && !readOnly && (
           <span
             title="AWS fills this in if you leave it blank"
             className="text-[9px] font-mono text-sky-600 dark:text-sky-400"
@@ -795,6 +851,39 @@ function AttrInput({
   );
 }
 
+/** Renders an AWS-assigned (read-only) attribute: shows its current
+ *  value disabled when known, else the Terraform-native "(known after
+ *  apply)" placeholder. Never editable, never written back. */
+function ReadOnlyAttr({
+  attr,
+  value,
+}: {
+  attr: ResourceAttribute;
+  value: unknown;
+}) {
+  const hasValue =
+    value !== undefined &&
+    value !== null &&
+    !(typeof value === "string" && value.trim() === "");
+  const display = hasValue
+    ? typeof value === "object"
+      ? JSON.stringify(value)
+      : String(value)
+    : "(known after apply)";
+  return (
+    <FieldRow label={attr.name} description={attr.description} readOnly>
+      <div
+        title={display}
+        className={`w-full text-xs font-mono rounded-sm border border-dashed border-border bg-muted/40 px-2 py-1 truncate ${
+          hasValue ? "text-muted-foreground" : "text-muted-foreground/60 italic"
+        }`}
+      >
+        {display}
+      </div>
+    </FieldRow>
+  );
+}
+
 /** Coarse classifier on the provider-schema `type` field so we can
  *  pick the right input element. The provider returns types like
  *  `"string"`, `"number"`, `"bool"`, `["list","string"]`,
@@ -952,9 +1041,11 @@ function BlockInstanceEditor({
   ) =>
     onUpdate({ blocks: { ...instance.blocks, [nestedName]: next } });
 
-  const requiredAttrs = blockType.attributes.filter((a) => a.required);
+  const requiredAttrs = blockType.attributes.filter(
+    (a) => a.required && !a.read_only,
+  );
   const optionalAttrs = blockType.attributes.filter(
-    (a) => !a.required && !a.deprecated,
+    (a) => !a.required && !a.deprecated && !a.read_only,
   );
 
   return (

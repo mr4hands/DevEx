@@ -29,9 +29,12 @@ def test_schemas_serves_uncurated_type(client, monkeypatch):
     assert res.status_code == 200
     body = res.json()
     assert "aws_security_group" in body["resources"]
-    attrs = {a["name"] for a in body["resources"]["aws_security_group"]["attributes"]}
-    assert "name" in attrs  # optional kept
-    assert "arn" not in attrs  # computed-only dropped
+    attrs = {
+        a["name"]: a for a in body["resources"]["aws_security_group"]["attributes"]
+    }
+    assert "name" in attrs and attrs["name"]["read_only"] is False  # editable
+    # computed-only attrs are surfaced read-only now (not dropped)
+    assert "arn" in attrs and attrs["arn"]["read_only"] is True
     assert body["resources"]["aws_security_group"]["family"] == "other"
 
 
@@ -67,20 +70,22 @@ CANNED_COMPUTED = {
 }
 
 
-def test_schemas_excludes_non_authorable_attrs(client, monkeypatch):
+def test_schemas_marks_aws_assigned_readonly(client, monkeypatch):
     monkeypatch.setattr(bp, "providers_schema", lambda root: CANNED_COMPUTED)
     res = client.get("/api/schemas?types=aws_s3_bucket")
     assert res.status_code == 200
     attrs = {a["name"]: a for a in res.json()["resources"]["aws_s3_bucket"]["attributes"]}
-    # AWS-assigned identifiers are never authorable.
-    assert "id" not in attrs
-    assert "tags_all" not in attrs
-    assert "arn" not in attrs  # computed-only
-    # Real user fields survive...
-    assert "bucket" in attrs and "force_destroy" in attrs and "tags" in attrs
-    # ...and the computed flag is surfaced so the form can label them.
-    assert attrs["bucket"]["computed"] is True
-    assert attrs["force_destroy"]["computed"] is False
+    # AWS-assigned identifiers are surfaced but read-only.
+    assert attrs["id"]["read_only"] is True
+    assert attrs["tags_all"]["read_only"] is True
+    assert attrs["arn"]["read_only"] is True  # computed-only
+    # Real user fields stay editable...
+    assert attrs["bucket"]["read_only"] is False and attrs["bucket"]["computed"] is True
+    assert (
+        attrs["force_destroy"]["read_only"] is False
+        and attrs["force_destroy"]["computed"] is False
+    )
+    assert attrs["tags"]["read_only"] is False
 
 
 def test_providers_schema_caches_by_lockfile_mtime(tmp_path, monkeypatch):

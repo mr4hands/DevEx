@@ -138,49 +138,54 @@ def schemas(
     }
 
 
-# Attributes a user must never author, even though the AWS provider marks
+# Attributes the user must never author, even though the AWS provider marks
 # them `optional + computed`. `id` is the resource identifier (AWS-assigned;
 # Terraform ignores it in config — the optional flag is a legacy quirk).
 # `tags_all` is the computed merge of `tags` + provider `default_tags`;
-# users edit `tags`. Surfacing these as editable fields is misleading and
-# writing them into HCL is wrong, so they're dropped from the form schema.
-_NON_AUTHORABLE_ATTRS = frozenset({"id", "tags_all"})
+# users edit `tags`. These are surfaced read-only, not dropped.
+_AWS_ASSIGNED_ATTRS = frozenset({"id", "tags_all"})
 
 
 def _normalize_attributes(attrs: dict[str, Any]) -> list[dict[str, Any]]:
     """Flatten the provider-schema attribute map into a list the
-    frontend form can render directly. Drops attributes the user can't
-    or shouldn't author (pure-computed outputs like `arn`, plus the
-    AWS-assigned `id` / `tags_all`), and surfaces the `computed` flag so
-    the form can label optional-computed fields as 'AWS fills if blank'."""
+    frontend form can render directly.
+
+    Every attribute is surfaced — nothing is dropped — but each carries a
+    `read_only` flag so the form knows what the user authors vs. what AWS
+    assigns:
+
+    - `read_only=True`  — pure-computed outputs (`arn`, `region`,
+      `create_date`, …) plus the AWS-assigned `id` / `tags_all`. Shown
+      disabled ("known after apply" when no value yet).
+    - `read_only=False`, `computed=True` — optional-computed (`bucket`,
+      `cidr_block`): editable, but AWS fills it if left blank.
+    - `read_only=False`, `computed=False` — plain required/optional fields.
+    """
     out: list[dict[str, Any]] = []
     for name, info in attrs.items():
-        # AWS-assigned identifiers — never authored (see above).
-        if name in _NON_AUTHORABLE_ATTRS:
-            continue
-        # Pure-computed outputs (`arn`, `region`, `create_date`, …) are
-        # state, not config — the user can't set them.
-        if info.get("computed") and not info.get("optional") and not info.get(
-            "required"
-        ):
-            continue
+        required = bool(info.get("required"))
+        optional = bool(info.get("optional"))
+        computed = bool(info.get("computed"))
+        # Read-only = AWS-assigned: pure-computed outputs, or the special
+        # id / tags_all the provider marks optional+computed.
+        read_only = (computed and not optional and not required) or (
+            name in _AWS_ASSIGNED_ATTRS
+        )
         out.append(
             {
                 "name": name,
                 "type": info.get("type"),
                 "description": info.get("description") or "",
-                "required": bool(info.get("required")),
-                "optional": bool(info.get("optional")),
-                # Optional-computed (e.g. `bucket`, `cidr_block`): the user
-                # may set it, but AWS fills it if left blank. The form uses
-                # this to label the field.
-                "computed": bool(info.get("computed")),
+                "required": required,
+                "optional": optional,
+                "computed": computed,
+                "read_only": read_only,
                 "sensitive": bool(info.get("sensitive")),
                 "deprecated": bool(info.get("deprecated")),
             }
         )
-    # Required first, then alphabetical. The frontend can re-sort.
-    out.sort(key=lambda a: (not a["required"], a["name"]))
+    # Editable first (required, then optional), read-only last; alpha within.
+    out.sort(key=lambda a: (a["read_only"], not a["required"], a["name"]))
     return out
 
 

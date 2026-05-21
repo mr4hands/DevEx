@@ -70,9 +70,12 @@ export type ResourceAttribute = {
   required: boolean;
   optional: boolean;
   /** True for optional-computed attributes — the user may set them, but
-   *  AWS fills a value if left blank (e.g. `bucket`, `cidr_block`).
-   *  Pure-computed outputs and AWS-assigned ids are dropped server-side. */
+   *  AWS fills a value if left blank (e.g. `bucket`, `cidr_block`). */
   computed: boolean;
+  /** True for AWS-assigned attributes the user must not author: pure
+   *  computed outputs (`arn`, `region`, …) plus `id` / `tags_all`. The
+   *  form shows these disabled ("known after apply" when no value yet). */
+  read_only: boolean;
   sensitive: boolean;
   deprecated: boolean;
 };
