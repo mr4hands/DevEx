@@ -11,6 +11,7 @@ import { ResourceTree } from "@/components/ResourceTree";
 import {
   deleteBlueprintResource,
   fetchPlanDiff,
+  setComponentOverride,
   type PlanRoot,
 } from "@/lib/api";
 import type { PlanDiffResponse, Resource, ResourceChange } from "@/lib/types";
@@ -62,6 +63,9 @@ Do not modify any other files. Report how many resources you found.`;
 
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
+  // Current component of the selected resource, surfaced by the tree so the
+  // inspector can show + reassign it.
+  const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [middleTab, setMiddleTab] = useState<MiddleTab>("list");
   // Blueprint state lives separately from `selected` because a blueprint
@@ -189,6 +193,17 @@ export default function Home() {
     setMiddleTab("plan");
   }, []);
 
+  // Persist a component override, then refresh the tree so the resource
+  // moves to its new branch.
+  const handleReassign = useCallback(
+    async (address: string, component: string) => {
+      await setComponentOverride(address, component);
+      setSelectedComponent(component);
+      setRefreshKey((k) => k + 1);
+    },
+    [],
+  );
+
   // Drop the planFocusAddress after a short delay so it doesn't keep
   // forcing the row open if the user later collapses it.
   useEffect(() => {
@@ -213,7 +228,10 @@ export default function Home() {
         {middleTab === "list" && (
           <ResourceTree
             selected={selected}
-            onSelect={setSelected}
+            onSelect={(r, c) => {
+              setSelected(r);
+              setSelectedComponent(c);
+            }}
             refreshKey={refreshKey}
           />
         )}
@@ -273,6 +291,8 @@ export default function Home() {
             change={selectedChange}
             onClose={() => setSelected(null)}
             onOpenInPlanDiff={openInPlanDiff}
+            component={selectedComponent}
+            onReassign={handleReassign}
           />
         )}
       </aside>

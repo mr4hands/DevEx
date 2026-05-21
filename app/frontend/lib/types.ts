@@ -191,6 +191,11 @@ export type InventoryResponse = {
   components: Record<string, { display_name?: string; target_module?: string }>;
 };
 
+export type Hierarchy = {
+  components: Record<string, { display_name?: string; target_module?: string }>;
+  overrides: Record<string, string>;
+};
+
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;

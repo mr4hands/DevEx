@@ -2,6 +2,7 @@ import type {
   BlueprintResourcesResponse,
   ChatMessage,
   ExistingResourcesResponse,
+  Hierarchy,
   InventoryResponse,
   PlanDiffResponse,
   PlanResponse,
@@ -150,6 +151,36 @@ export async function fetchInventory(
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`/api/inventory failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Reads the hierarchy mapping (components + overrides). */
+export async function fetchHierarchy(signal?: AbortSignal): Promise<Hierarchy> {
+  const res = await fetch("/api/hierarchy", { cache: "no-store", signal });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/hierarchy failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Assigns a resource to a component (override). Creates the component on
+ *  the fly server-side if it's new. Returns the updated hierarchy. */
+export async function setComponentOverride(
+  address: string,
+  component: string,
+  signal?: AbortSignal,
+): Promise<Hierarchy> {
+  const res = await fetch("/api/hierarchy/override", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ address, component }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/hierarchy/override failed (${res.status}): ${text}`);
   }
   return res.json();
 }

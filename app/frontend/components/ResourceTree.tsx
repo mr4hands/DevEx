@@ -72,7 +72,7 @@ export function ResourceTree({
   refreshKey,
 }: {
   selected: Resource | null;
-  onSelect: (r: Resource) => void;
+  onSelect: (r: Resource, component: string) => void;
   refreshKey?: number;
 }) {
   const [items, setItems] = useState<InventoryResource[]>([]);
@@ -173,7 +173,7 @@ export function ResourceTree({
                             key={r.address}
                             item={r}
                             selected={selected?.address === r.address}
-                            onSelect={() => onSelect(toResource(r))}
+                            onSelect={() => onSelect(toResource(r), r.component)}
                           />
                         ))}
                       </TreeBranch>

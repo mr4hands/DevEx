@@ -36,6 +36,8 @@ export function ResourceDrawer({
   change,
   onClose,
   onOpenInPlanDiff,
+  component,
+  onReassign,
 }: {
   resource: Resource | null;
   /** Pending change for this resource, indexed by address by the parent
@@ -45,6 +47,11 @@ export function ResourceDrawer({
   onClose: () => void;
   /** Switch the middle pane to the Plan tab + auto-expand the row. */
   onOpenInPlanDiff?: (resource: Resource) => void;
+  /** Current component for this resource (from the inventory tree). When
+   *  provided alongside `onReassign`, the drawer shows a reassign control. */
+  component?: string | null;
+  /** Persists a component override for this resource. */
+  onReassign?: (address: string, component: string) => Promise<void> | void;
 }) {
   if (!resource) return <EmptyDrawer />;
 
@@ -54,6 +61,8 @@ export function ResourceDrawer({
       change={change ?? null}
       onClose={onClose}
       onOpenInPlanDiff={onOpenInPlanDiff}
+      component={component ?? null}
+      onReassign={onReassign}
     />
   );
 }
@@ -76,11 +85,15 @@ function DrawerBody({
   change,
   onClose,
   onOpenInPlanDiff,
+  component,
+  onReassign,
 }: {
   resource: Resource;
   change: ChangeSummary | null;
   onClose: () => void;
   onOpenInPlanDiff?: (r: Resource) => void;
+  component: string | null;
+  onReassign?: (address: string, component: string) => Promise<void> | void;
 }) {
   const leafChanges = useMemo(
     () => (change ? expandChanges(change.before, change.after) : []),
@@ -208,6 +221,13 @@ function DrawerBody({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto min-h-0">
+        {onReassign && (
+          <ComponentReassign
+            address={resource.address}
+            current={component ?? "Unassigned"}
+            onReassign={onReassign}
+          />
+        )}
         {/* Pending changes — top, always expanded when present */}
         {change && leafChanges.length > 0 && (
           <PendingChangesSection
@@ -307,6 +327,82 @@ function DrawerBody({
           <span>this resource is the chat&apos;s current context</span>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Component reassignment strip — assigns this resource to a component
+ *  (writes a mapping override). Creating a new component on the fly is
+ *  handled server-side. */
+function ComponentReassign({
+  address,
+  current,
+  onReassign,
+}: {
+  address: string;
+  current: string;
+  onReassign: (address: string, component: string) => Promise<void> | void;
+}) {
+  const [value, setValue] = useState(current === "Unassigned" ? "" : current);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Re-sync when the selected resource changes.
+  const [lastAddress, setLastAddress] = useState(address);
+  if (lastAddress !== address) {
+    setLastAddress(address);
+    setValue(current === "Unassigned" ? "" : current);
+    setErr(null);
+  }
+
+  const dirty = value.trim() !== "" && value.trim() !== current;
+
+  const save = async () => {
+    const next = value.trim();
+    if (!next) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await onReassign(address, next);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="px-3 py-2 border-b border-border bg-muted/30">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
+        Component
+      </div>
+      <div className="flex items-center gap-1.5">
+        <input
+          className="flex-1 min-w-0 text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent"
+          value={value}
+          placeholder={current === "Unassigned" ? "assign a component…" : current}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && dirty && !busy) void save();
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={!dirty || busy}
+          className="shrink-0 h-7 px-2 text-[11px] font-medium rounded-sm bg-accent text-white hover:opacity-90 transition-colors disabled:opacity-40"
+        >
+          {busy ? "…" : "assign"}
+        </button>
+      </div>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        current: <span className="font-mono">{current}</span>
+      </p>
+      {err && (
+        <p className="mt-1 text-[10px] text-red-600 dark:text-red-400 break-words">
+          {err}
+        </p>
+      )}
     </div>
   );
 }
