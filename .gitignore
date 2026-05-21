@@ -49,3 +49,6 @@ __pycache__/
 
 # Claude Design session exports (HTML drops from claude.ai/design)
 app/frontend/.design-handoff/
+
+# Visual brainstorm companion artifacts
+.superpowers/
