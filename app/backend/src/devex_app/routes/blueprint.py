@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import hcl2
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -1060,20 +1060,13 @@ class DraftRequest(BaseModel):
     `attributes`/`import_id` seed the HCL for new/adopt/edit; `delete`
     records a marker only."""
 
-    kind: str = Field(..., description="new | adopt | edit | delete")
+    kind: Literal["new", "adopt", "edit", "delete"]
     type: str = Field(...)
     name: str = Field(...)
     component: str | None = None
     source_address: str | None = None
     import_id: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("kind")
-    @classmethod
-    def _kind_valid(cls, v: str) -> str:
-        if v not in {"new", "adopt", "edit", "delete"}:
-            raise ValueError(f"Invalid draft kind {v!r}")
-        return v
 
     @field_validator("type")
     @classmethod

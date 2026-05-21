@@ -17,5 +17,7 @@ _layout.json
 # Per-session/experiment runtime state, not repo-source.
 _discovered.json
 _hierarchy.json
+# Per-owner draft namespaces (bp.*.tf + _drafts.json), runtime state.
+drafts/
 # Legacy pre-flat layout (migrated to bp.*.tf on first list).
 resources/

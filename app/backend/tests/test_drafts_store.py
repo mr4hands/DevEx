@@ -5,7 +5,17 @@ from devex_app import drafts
 
 def test_owner_dir_is_namespaced(tmp_path):
     d = drafts.owner_dir(tmp_path, "alice")
-    assert d == tmp_path / "drafts" / "alice"
+    assert d == (tmp_path / "drafts" / "alice").resolve()
+
+
+def test_owner_dir_rejects_escape(tmp_path):
+    # Defense-in-depth: owner_dir refuses paths that resolve ABOVE the
+    # blueprint root (the route-layer regex blocks the rest).
+    import pytest
+
+    for bad in ("../../etc", "/absolute/path"):
+        with pytest.raises(ValueError):
+            drafts.owner_dir(tmp_path, bad)
 
 
 def test_save_and_load_draft(tmp_path):

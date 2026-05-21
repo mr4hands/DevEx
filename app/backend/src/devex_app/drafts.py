@@ -12,14 +12,35 @@ This module is pure storage; HCL rendering lives in routes/blueprint.py.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
 _DRAFTS_FILE = "_drafts.json"
 
+# Per-owner locks serialize the load→mutate→write of `_drafts.json` so two
+# concurrent same-owner requests (Starlette runs sync handlers in a thread
+# pool) can't lose each other's entries. In-process only — full
+# multi-process safety is part of the deferred production work.
+_owner_locks: dict[str, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def _owner_lock(blueprint_root: Path, owner: str) -> threading.Lock:
+    key = str(owner_dir(blueprint_root, owner))
+    with _locks_guard:
+        return _owner_locks.setdefault(key, threading.Lock())
+
 
 def owner_dir(blueprint_root: Path, owner: str) -> Path:
-    return blueprint_root / "drafts" / owner
+    """Resolved per-owner draft directory. Defense-in-depth: refuse a path
+    that escapes the blueprint root (the route layer already validates the
+    owner header, but this guards any other caller)."""
+    base = blueprint_root.resolve()
+    candidate = (base / "drafts" / owner).resolve()
+    if base != candidate and base not in candidate.parents:
+        raise ValueError(f"owner {owner!r} escapes blueprint root")
+    return candidate
 
 
 def _drafts_path(blueprint_root: Path, owner: str) -> Path:
@@ -50,13 +71,15 @@ def _write_drafts(blueprint_root: Path, owner: str, data: dict[str, Any]) -> Non
 def save_draft_entry(
     blueprint_root: Path, owner: str, address: str, entry: dict[str, Any]
 ) -> None:
-    data = load_drafts(blueprint_root, owner)
-    data[address] = entry
-    _write_drafts(blueprint_root, owner, data)
+    with _owner_lock(blueprint_root, owner):
+        data = load_drafts(blueprint_root, owner)
+        data[address] = entry
+        _write_drafts(blueprint_root, owner, data)
 
 
 def delete_draft_entry(blueprint_root: Path, owner: str, address: str) -> None:
-    data = load_drafts(blueprint_root, owner)
-    if address in data:
-        del data[address]
-        _write_drafts(blueprint_root, owner, data)
+    with _owner_lock(blueprint_root, owner):
+        data = load_drafts(blueprint_root, owner)
+        if address in data:
+            del data[address]
+            _write_drafts(blueprint_root, owner, data)

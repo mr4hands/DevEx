@@ -139,6 +139,11 @@ def inventory(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
             "values": attrs,
         }
 
+    # Overlay the requesting owner's drafts onto live/discovered items.
+    # Only `edit`/`delete` drafts annotate today, since they reference an
+    # existing inventory row. `new`/`adopt` drafts live in
+    # `drafts/<owner>/` with no live counterpart yet — surfacing those as
+    # their own rows is wired into the planned source in a later phase.
     owner_drafts = drafts.load_drafts(settings.blueprint_root, owner)
     by_address = {it["address"]: it for it in items.values()}
     for address, entry in owner_drafts.items():
