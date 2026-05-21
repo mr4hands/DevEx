@@ -299,7 +299,17 @@ function CanvasInner({
 
   const onDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    // The drop is only permitted when dropEffect is compatible with the
+    // drag's effectAllowed. Existing-resource rows set effectAllowed
+    // "copy" (adoption copies the resource into the blueprint, it
+    // doesn't remove it from AWS), so we must echo "copy" for them —
+    // otherwise the browser rejects the drop and onDrop never fires.
+    // Palette tiles use "move".
+    e.dataTransfer.dropEffect = e.dataTransfer.types.includes(
+      EXISTING_DRAG_TYPE,
+    )
+      ? "copy"
+      : "move";
   }, []);
 
   const onDrop = useCallback(
