@@ -13,11 +13,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from .. import drafts
 from ..inventory import account_region, classify_component
 from ..settings import get_settings
 from ..tofu import TofuError, resources_from_state, show_state
+from ._deps import resolve_owner
 from .blueprint import list_resources
 
 router = APIRouter()
@@ -36,7 +38,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 @router.get("/inventory")
-def inventory() -> dict[str, Any]:
+def inventory(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
     settings = get_settings()
 
     hierarchy = _load_json(settings.blueprint_root / _HIERARCHY)
@@ -65,6 +67,7 @@ def inventory() -> dict[str, Any]:
             "region": region,
             "managed": True,
             "state": "managed",
+            "draft_kind": None,
             "component": component,
             "component_source": source,
             "tags": tags,
@@ -93,6 +96,7 @@ def inventory() -> dict[str, Any]:
                 "region": region,
                 "managed": False,
                 "state": "unmanaged",
+                "draft_kind": None,
                 "component": component,
                 "component_source": source,
                 "tags": tags,
@@ -128,10 +132,18 @@ def inventory() -> dict[str, Any]:
             "region": region,
             "managed": False,
             "state": "planned",
+            "draft_kind": None,
             "component": component,
             "component_source": source,
             "tags": tags,
             "values": attrs,
         }
+
+    owner_drafts = drafts.load_drafts(settings.blueprint_root, owner)
+    by_address = {it["address"]: it for it in items.values()}
+    for address, entry in owner_drafts.items():
+        target = by_address.get(address)
+        if target is not None:
+            target["draft_kind"] = entry.get("kind")
 
     return {"resources": list(items.values()), "components": components}
