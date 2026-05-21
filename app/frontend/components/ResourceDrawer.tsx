@@ -38,6 +38,8 @@ export function ResourceDrawer({
   onOpenInPlanDiff,
   component,
   onReassign,
+  onEdit,
+  editLabel,
 }: {
   resource: Resource | null;
   /** Pending change for this resource, indexed by address by the parent
@@ -52,6 +54,10 @@ export function ResourceDrawer({
   component?: string | null;
   /** Persists a component override for this resource. */
   onReassign?: (address: string, component: string) => Promise<void> | void;
+  /** When set, the header shows an Edit button (the inspector uses this to
+   *  flip into edit-as-draft mode). */
+  onEdit?: () => void;
+  editLabel?: string;
 }) {
   if (!resource) return <EmptyDrawer />;
 
@@ -63,6 +69,8 @@ export function ResourceDrawer({
       onOpenInPlanDiff={onOpenInPlanDiff}
       component={component ?? null}
       onReassign={onReassign}
+      onEdit={onEdit}
+      editLabel={editLabel}
     />
   );
 }
@@ -87,6 +95,8 @@ function DrawerBody({
   onOpenInPlanDiff,
   component,
   onReassign,
+  onEdit,
+  editLabel,
 }: {
   resource: Resource;
   change: ChangeSummary | null;
@@ -94,6 +104,8 @@ function DrawerBody({
   onOpenInPlanDiff?: (r: Resource) => void;
   component: string | null;
   onReassign?: (address: string, component: string) => Promise<void> | void;
+  onEdit?: () => void;
+  editLabel?: string;
 }) {
   const leafChanges = useMemo(
     () => (change ? expandChanges(change.before, change.after) : []),
@@ -172,6 +184,15 @@ function DrawerBody({
             </div>
             <AddressBreakdown address={resource.address} />
           </div>
+          {onEdit && (
+            <button
+              type="button"
+              onClick={onEdit}
+              className="shrink-0 h-6 px-2 inline-flex items-center justify-center text-[11px] font-medium rounded-sm bg-accent text-white hover:opacity-90 transition-colors"
+            >
+              {editLabel ?? "Edit"}
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
