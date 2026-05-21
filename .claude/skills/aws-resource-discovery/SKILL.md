@@ -73,10 +73,27 @@ you did not just discover. Update `generated_at` and `scopes_loaded`.
 
 `name` must be a valid OpenTofu identifier (letters, digits, `_`; start
 with a letter or underscore). Derive it from the resource's name/id,
-replacing illegal characters with `_`. Keep `summary_attributes` small — a
-few human-recognizable fields. The authoritative config comes later from
-`generate-config-out` (the canvas's "generate clean config" button), not
-from this map, so a thin summary is correct here.
+replacing illegal characters with `_`.
+
+### What to put in `summary_attributes`
+
+These are the resource's **live AWS values**, shown in the canvas drawer's
+read-only "Set by AWS" section (the user never edits them, and they're
+never written into HCL — the backend strips read-only attributes on
+write). So capture the deployed identifiers the user would want to see,
+including the computed ones:
+
+- always include `arn` when the resource has one (IAM ListRoles returns
+  `Arn`; for S3 build `arn:aws:s3:::<bucket>`; EC2/VPC/subnet expose it on
+  the describe response),
+- `region` and, where relevant, `availability_zone`,
+- the human-recognizable config field (bucket name, cidr_block, instance
+  type, role name) so the editable form pre-fills sensibly.
+
+The authoritative *editable* config still comes from `generate-config-out`
+(the canvas's "generate clean config" button); `summary_attributes` is the
+live snapshot for display + a thin pre-fill, so erring toward including
+identifiers like `arn` is correct here.
 
 ## Rules
 

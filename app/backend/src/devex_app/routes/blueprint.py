@@ -322,6 +322,30 @@ class ResourceWriteRequest(BaseModel):
         return v
 
 
+def _read_only_attr_names(type_: str) -> set[str]:
+    """Names of attributes the provider marks read-only (AWS-assigned) for
+    `type_` — pure-computed outputs plus `id` / `tags_all`. Used to keep
+    those values out of authored HCL even when a client (e.g. a rich
+    discovery payload) sends them. Empty set when the schema is
+    unavailable (unknown type / workspace not initialized), in which case
+    we don't filter."""
+    settings = get_settings()
+    try:
+        schema = providers_schema(settings.blueprint_root)
+    except TofuError:
+        return set()
+    provider_schemas = schema.get("provider_schemas") or {}
+    for key in AWS_PROVIDER_KEYS:
+        resources_block = (provider_schemas.get(key) or {}).get(
+            "resource_schemas"
+        ) or {}
+        resource_schema = resources_block.get(type_)
+        if resource_schema:
+            attrs = (resource_schema.get("block") or {}).get("attributes") or {}
+            return {a["name"] for a in _normalize_attributes(attrs) if a["read_only"]}
+    return set()
+
+
 @router.post("/blueprint/resource")
 def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
     """Writes the resource as its own `.tf` file under the blueprint
@@ -342,10 +366,17 @@ def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
     # subdirectories.
     filename = f"bp.{req.type}.{req.name}.tf"
     path = settings.blueprint_root / filename
+    # Never author AWS-assigned attributes into HCL, even if the caller
+    # sends them (e.g. an adopt with a rich discovery payload). They're
+    # state, not config — surfaced read-only in the UI, not written.
+    read_only = _read_only_attr_names(req.type)
+    authored_attrs = {
+        k: v for k, v in req.attributes.items() if k not in read_only
+    }
     resource_hcl = _render_resource_block(
         req.type,
         req.name,
-        req.attributes,
+        authored_attrs,
         req.blocks,
     )
     if req.import_id:

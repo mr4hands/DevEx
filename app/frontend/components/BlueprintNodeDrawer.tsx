@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   deleteBlueprintResource,
+  fetchExistingResources,
   fetchSchemas,
   generateBlueprintConfig,
   writeBlueprintResource,
@@ -69,6 +70,10 @@ export function BlueprintNodeDrawer({
   const [schema, setSchema] = useState<ResourceSchema | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Live AWS values for an adopted resource's read-only fields, sourced
+  // from the discovery manifest (not the config HCL, which never holds
+  // computed values). `id` always comes from the import id we adopted with.
+  const [observed, setObserved] = useState<Record<string, unknown>>({});
 
   // Per-node form state. The outer map key is the node id; inner is
   // `{name, attrs, blocks}`. Survives across node toggles.
@@ -135,6 +140,42 @@ export function BlueprintNodeDrawer({
       .finally(() => {
         if (cancelled) return;
         setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      ac.abort();
+    };
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [node]);
+
+  // For adopted resources, pull the live AWS values (arn, region, …) from
+  // the discovery manifest so the read-only section shows real values
+  // instead of "(known after apply)". `id` is the import id we have on
+  // the node. These are display-only — never written to HCL.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
+    if (!node || !(node.data.imported || node.data.importId)) {
+      setObserved({});
+      return;
+    }
+    const base: Record<string, unknown> = node.data.importId
+      ? { id: node.data.importId }
+      : {};
+    setObserved(base);
+    let cancelled = false;
+    const ac = new AbortController();
+    const type = node.data.resourceType;
+    const name = node.data.name;
+    fetchExistingResources(ac.signal, type)
+      .then((res) => {
+        if (cancelled) return;
+        const match = res.groups
+          .flatMap((g) => g.resources)
+          .find((r) => r.type === type && r.name === name);
+        setObserved(match ? { ...match.summary_attributes, ...base } : base);
+      })
+      .catch(() => {
+        /* manifest unavailable — keep base (id only) */
       });
     return () => {
       cancelled = true;
@@ -485,7 +526,7 @@ export function BlueprintNodeDrawer({
                       <ReadOnlyAttr
                         key={a.name}
                         attr={a}
-                        value={formState.attrs[a.name]}
+                        value={observed[a.name] ?? formState.attrs[a.name]}
                       />
                     ))}
                   </div>
