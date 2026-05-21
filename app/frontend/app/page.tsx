@@ -61,6 +61,19 @@ documents (groups of { address, type, name, import_id, summary_attributes }).
 Do not modify any other files. Report how many resources you found.`;
 }
 
+// Seeded by a component node's "+add" button. The agent authors new
+// resources into the blueprint sandbox, tagged with the component so they
+// classify under it in the tree.
+function addToComponentPrompt(component: string): string {
+  return `Add resources to the "${component}" component.
+
+Author the new resource(s) into the blueprint sandbox at the root of
+\`live/blueprint/\` as \`bp.<type>.<name>.tf\` files, following the repo
+conventions. Tag every resource you add with \`Component = "${component}"\`
+(merge into its \`tags\`) so it classifies under ${component} in the tree.
+If it's unclear what to add, ask me first. Do not run \`tofu apply\`.`;
+}
+
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
   // Current component of the selected resource, surfaced by the tree so the
@@ -232,6 +245,7 @@ export default function Home() {
               setSelected(r);
               setSelectedComponent(c);
             }}
+            onAddToComponent={(c) => setPendingPrompt(addToComponentPrompt(c))}
             refreshKey={refreshKey}
           />
         )}

@@ -180,6 +180,9 @@ export type InventoryResource = {
   account: string;
   region: string;
   managed: boolean;
+  /** "managed" (in tofu state) | "unmanaged" (in AWS, adoptable) |
+   *  "planned" (authored in the blueprint sandbox, not yet applied). */
+  state: "managed" | "unmanaged" | "planned" | string;
   component: string;
   component_source: "tag" | "override" | "unassigned" | string;
   tags: Record<string, unknown>;

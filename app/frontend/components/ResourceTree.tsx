@@ -69,10 +69,14 @@ function toResource(r: InventoryResource): Resource {
 export function ResourceTree({
   selected,
   onSelect,
+  onAddToComponent,
   refreshKey,
 }: {
   selected: Resource | null;
   onSelect: (r: Resource, component: string) => void;
+  /** Fired by a component node's "+add" button — the parent seeds an agent
+   *  prompt to add resources to that component. */
+  onAddToComponent?: (component: string) => void;
   refreshKey?: number;
 }) {
   const [items, setItems] = useState<InventoryResource[]>([]);
@@ -158,6 +162,21 @@ export function ResourceTree({
                     kind="component"
                     collapsed={collapsed}
                     onToggle={toggle}
+                    action={
+                      onAddToComponent && comp.component !== "Unassigned" ? (
+                        <button
+                          type="button"
+                          title={`Ask the agent to add resources to ${comp.component}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAddToComponent(comp.component);
+                          }}
+                          className="shrink-0 px-1.5 h-5 text-[11px] font-mono text-emerald-700 dark:text-emerald-400 hover:bg-muted rounded-sm"
+                        >
+                          ＋
+                        </button>
+                      ) : null
+                    }
                   >
                     {comp.types.map((tg) => (
                       <TreeBranch
@@ -195,6 +214,7 @@ function TreeBranch({
   kind,
   collapsed,
   onToggle,
+  action,
   children,
 }: {
   id: string;
@@ -202,23 +222,29 @@ function TreeBranch({
   kind: "account" | "region" | "component" | "type";
   collapsed: Set<string>;
   onToggle: (id: string) => void;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const isCollapsed = collapsed.has(id);
   const indent = { account: 0, region: 12, component: 24, type: 36 }[kind];
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => onToggle(id)}
-        style={{ paddingLeft: indent + 8 }}
-        className="w-full flex items-center gap-1.5 h-6 pr-2 text-left hover:bg-muted border-b border-border font-mono"
-      >
-        <span className={`transition-transform ${isCollapsed ? "" : "rotate-90"}`}>
-          ›
-        </span>
-        <span className={kind === "component" ? "font-semibold" : ""}>{label}</span>
-      </button>
+      <div className="w-full flex items-center pr-2 border-b border-border hover:bg-muted">
+        <button
+          type="button"
+          onClick={() => onToggle(id)}
+          style={{ paddingLeft: indent + 8 }}
+          className="flex-1 min-w-0 flex items-center gap-1.5 h-6 text-left font-mono"
+        >
+          <span className={`transition-transform ${isCollapsed ? "" : "rotate-90"}`}>
+            ›
+          </span>
+          <span className={`truncate ${kind === "component" ? "font-semibold" : ""}`}>
+            {label}
+          </span>
+        </button>
+        {action}
+      </div>
       {!isCollapsed && children}
     </div>
   );
@@ -246,15 +272,29 @@ function ResourceRow({
     >
       <span className={`w-[2px] self-stretch my-1 ${classes.rail}`} />
       <span className="truncate flex-1">{item.name}</span>
-      <span
-        className={`px-1 rounded-sm text-[9px] ${
-          item.managed
-            ? "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300"
-            : "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
-        }`}
-      >
-        {item.managed ? "mgd" : "unmgd"}
-      </span>
+      <StateBadge state={item.state} />
     </button>
   );
+}
+
+function StateBadge({ state }: { state: string }) {
+  const meta: Record<string, { label: string; cls: string }> = {
+    managed: {
+      label: "mgd",
+      cls: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+    },
+    unmanaged: {
+      label: "unmgd",
+      cls: "bg-amber-50 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
+    },
+    planned: {
+      label: "plan",
+      cls: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+    },
+  };
+  const m = meta[state] ?? {
+    label: state,
+    cls: "bg-muted text-muted-foreground",
+  };
+  return <span className={`px-1 rounded-sm text-[9px] ${m.cls}`}>{m.label}</span>;
 }
