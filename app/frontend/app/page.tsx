@@ -5,7 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BlueprintCanvas, type BlueprintNode } from "@/components/BlueprintCanvas";
 import { BlueprintNodeDrawer } from "@/components/BlueprintNodeDrawer";
 import { ChatPanel } from "@/components/ChatPanel";
+import { PendingChanges } from "@/components/PendingChanges";
 import { PlanDiff } from "@/components/PlanDiff";
+import { QuickCreate } from "@/components/QuickCreate";
 import { ResourceDrawer } from "@/components/ResourceDrawer";
 import { ResourceInspector } from "@/components/ResourceInspector";
 import { ResourceTree, inventoryToResource } from "@/components/ResourceTree";
@@ -84,6 +86,26 @@ conventions. Tag every resource you add with \`Component = "${component}"\`
 If it's unclear what to add, ask me first. Do not run \`tofu apply\`.`;
 }
 
+// Seeded by the pending-changes "commit to PR" button. The agent reads the
+// owner's draft set and promotes each change into the right module per
+// component, opening a PR. Apply stays manual.
+function commitDraftsPrompt(): string {
+  return `Promote my pending blueprint drafts into a reviewable PR.
+
+My drafts live under \`live/blueprint/drafts/<owner>/\` — read its
+\`_drafts.json\` (and the matching \`bp.<type>.<name>.tf\` files) for the
+change set. Apply each draft by kind:
+- "new": add the resource to its component's module (\`target_module\`),
+  creating the module if needed, per the opentofu-style-guide skill.
+- "edit": modify the existing resource (\`source_address\`) in its real module.
+- "adopt": bring it under management via an \`import { }\` block.
+- "delete": remove the resource from its module (a destroy).
+
+Group by component, run \`tofu fmt\` + \`tofu validate\`, create a branch,
+commit (do NOT commit the \`drafts/\` sandbox), push, open a PR with
+\`gh pr create --fill\`, and report the URL. Do not run \`tofu apply\`.`;
+}
+
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
   // Full inventory row for the tree selection — drives the unified inspector
@@ -91,6 +113,8 @@ export default function Home() {
   const [selectedItem, setSelectedItem] = useState<InventoryResource | null>(
     null,
   );
+  // When set, region 4 shows the QuickCreate form for this component.
+  const [creating, setCreating] = useState<{ component: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [workTab, setWorkTab] = useState<WorkTab>("canvas");
   // The agent column collapses to a thin strip to give the work surface room.
@@ -279,14 +303,19 @@ export default function Home() {
 
       {/* Region 2 — Resource tree (persistent navigator) */}
       <aside className="w-[260px] shrink-0 border-r border-border flex flex-col min-h-0">
+        <PendingChanges
+          refreshKey={refreshKey}
+          onCommit={() => setPendingPrompt(commitDraftsPrompt())}
+        />
         <ResourceTree
           selected={selected}
           onSelect={(item) => {
             setSelectedItem(item);
             setSelected(inventoryToResource(item));
             setBlueprintNode(null);
+            setCreating(null);
           }}
-          onAddToComponent={(c) => setPendingPrompt(addToComponentPrompt(c))}
+          onAddToComponent={(c) => setCreating({ component: c })}
           onDiscover={(scope) => setPendingPrompt(discoveryPrompt(scope))}
           refreshKey={refreshKey}
         />
@@ -327,7 +356,20 @@ export default function Home() {
 
       {/* Region 4 — Inspector */}
       <aside className="w-[380px] shrink-0 border-l border-border flex flex-col min-h-0">
-        {blueprintNode ? (
+        {creating ? (
+          <QuickCreate
+            component={creating.component}
+            onCreated={() => {
+              setRefreshKey((k) => k + 1);
+              setCreating(null);
+            }}
+            onCancel={() => setCreating(null)}
+            onAskAgent={(c) => {
+              setPendingPrompt(addToComponentPrompt(c));
+              setCreating(null);
+            }}
+          />
+        ) : blueprintNode ? (
           <BlueprintNodeDrawer
             node={blueprintNode}
             onClose={() => setBlueprintNode(null)}
