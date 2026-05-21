@@ -37,6 +37,45 @@ def test_edit_draft_annotates_managed_resource(client, blueprint_env, monkeypatc
     assert row["draft_kind"] == "edit"
 
 
+def test_new_draft_surfaces_as_planned_row(client, blueprint_env, monkeypatch):
+    import devex_app.routes.blueprint as bp
+
+    monkeypatch.setattr(inv, "show_state", lambda root: {})
+    monkeypatch.setattr(inv, "resources_from_state", lambda state: [])
+    monkeypatch.setattr(
+        bp,
+        "providers_schema",
+        lambda root: {
+            "provider_schemas": {
+                "registry.opentofu.org/hashicorp/aws": {
+                    "resource_schemas": {
+                        "aws_s3_bucket": {
+                            "block": {"attributes": {}, "block_types": {}}
+                        }
+                    }
+                }
+            }
+        },
+    )
+    client.post(
+        "/api/blueprint/draft",
+        headers={"X-DevEx-Owner": "alice"},
+        json={
+            "kind": "new",
+            "type": "aws_s3_bucket",
+            "name": "logs",
+            "component": "solr",
+        },
+    )
+    res = client.get("/api/inventory", headers={"X-DevEx-Owner": "alice"})
+    rows = {r["address"]: r for r in res.json()["resources"]}
+    assert "aws_s3_bucket.logs" in rows
+    row = rows["aws_s3_bucket.logs"]
+    assert row["state"] == "planned"
+    assert row["draft_kind"] == "new"
+    assert row["component"] == "solr"
+
+
 def test_drafts_are_owner_scoped_in_inventory(client, blueprint_env, monkeypatch):
     _managed(
         monkeypatch,

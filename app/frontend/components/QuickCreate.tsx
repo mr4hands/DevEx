@@ -20,7 +20,7 @@ export function QuickCreate({
   onAskAgent,
 }: {
   component: string;
-  onCreated: () => void;
+  onCreated: (created: { type: string; name: string; component: string }) => void;
   onCancel: () => void;
   onAskAgent: (component: string) => void;
 }) {
@@ -37,7 +37,7 @@ export function QuickCreate({
     setErr(null);
     try {
       await writeDraft({ kind: "new", type, name, component });
-      onCreated();
+      onCreated({ type, name, component });
     } catch (e) {
       setErr((e as Error).message);
     } finally {

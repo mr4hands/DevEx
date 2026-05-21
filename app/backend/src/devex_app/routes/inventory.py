@@ -20,7 +20,7 @@ from ..inventory import account_region, classify_component
 from ..settings import get_settings
 from ..tofu import TofuError, resources_from_state, show_state
 from ._deps import resolve_owner
-from .blueprint import list_resources
+from .blueprint import _parse_resource_file, list_resources
 
 router = APIRouter()
 
@@ -139,16 +139,50 @@ def inventory(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
             "values": attrs,
         }
 
-    # Overlay the requesting owner's drafts onto live/discovered items.
-    # Only `edit`/`delete` drafts annotate today, since they reference an
-    # existing inventory row. `new`/`adopt` drafts live in
-    # `drafts/<owner>/` with no live counterpart yet — surfacing those as
-    # their own rows is wired into the planned source in a later phase.
+    # Overlay the requesting owner's drafts. `edit`/`delete` drafts annotate
+    # an existing live row; `new`/`adopt` drafts have no live counterpart, so
+    # surface them as their own `planned` rows (reading their HCL from the
+    # owner's draft namespace) so a just-created resource shows in the tree.
     owner_drafts = drafts.load_drafts(settings.blueprint_root, owner)
+    owner_root = drafts.owner_dir(settings.blueprint_root, owner)
     by_address = {it["address"]: it for it in items.values()}
     for address, entry in owner_drafts.items():
         target = by_address.get(address)
         if target is not None:
             target["draft_kind"] = entry.get("kind")
+            continue
+        kind = entry.get("kind")
+        if kind not in ("new", "adopt"):
+            continue
+        type_, _, name = address.partition(".")
+        attrs: dict[str, Any] = {}
+        bp_path = owner_root / f"bp.{type_}.{name}.tf"
+        if bp_path.exists():
+            try:
+                parsed = _parse_resource_file(bp_path)
+                if parsed:
+                    attrs = parsed.get("attributes") or {}
+            except Exception:  # noqa: BLE001 — a bad draft file shouldn't 500
+                attrs = {}
+        tags = attrs.get("tags") or {}
+        component, source = classify_component(tags, address, overrides)
+        if component == "Unassigned" and entry.get("component"):
+            component, source = str(entry["component"]), "tag"
+        items[f"draft:{address}"] = {
+            "address": address,
+            "type": type_,
+            "name": name,
+            "id": None,
+            "arn": attrs.get("arn"),
+            "account": sandbox_account,
+            "region": sandbox_region,
+            "managed": False,
+            "state": "planned",
+            "draft_kind": kind,
+            "component": component,
+            "component_source": source,
+            "tags": tags,
+            "values": attrs,
+        }
 
     return {"resources": list(items.values()), "components": components}

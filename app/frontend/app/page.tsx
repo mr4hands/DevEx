@@ -359,9 +359,30 @@ export default function Home() {
         {creating ? (
           <QuickCreate
             component={creating.component}
-            onCreated={() => {
-              setRefreshKey((k) => k + 1);
+            onCreated={(c) => {
               setCreating(null);
+              setRefreshKey((k) => k + 1);
+              // Show the just-created draft in the inspector immediately
+              // (a minimal row; the tree refresh fills in the parsed one).
+              const item: InventoryResource = {
+                address: `${c.type}.${c.name}`,
+                type: c.type,
+                name: c.name,
+                id: null,
+                arn: null,
+                account: "unknown",
+                region: "unknown",
+                managed: false,
+                state: "planned",
+                component: c.component,
+                component_source: "tag",
+                draft_kind: "new",
+                tags: { Component: c.component },
+                values: {},
+              };
+              setSelectedItem(item);
+              setSelected(inventoryToResource(item));
+              setBlueprintNode(null);
             }}
             onCancel={() => setCreating(null)}
             onAskAgent={(c) => {
