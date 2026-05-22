@@ -15,12 +15,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from .. import drafts
+from .. import drafts, leaves
 from ..inventory import account_region, classify_component
 from ..settings import get_settings
 from ..tofu import TofuError, resources_from_state, show_state
 from ._deps import resolve_owner
-from .blueprint import _parse_resource_file, list_resources
+from .blueprint import _parse_resource_file
 
 router = APIRouter()
 
@@ -103,85 +103,46 @@ def inventory(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
                 "values": summary,
             }
 
-    # Planned resources authored in the blueprint sandbox (bp.*.tf) — not
-    # yet applied or discovered, but classified by their Component tag so a
-    # just-added resource shows under its component immediately.
-    sandbox_account = hierarchy.get("account_id") or "unknown"
-    sandbox_region = hierarchy.get("region") or "unknown"
-    for res in (list_resources().get("resources") or []):
-        address = f"{res['type']}.{res['name']}"
-        import_id = res.get("import_id")
-        key = import_id or f"bp:{address}"
-        if key in items:
-            continue
-        attrs = res.get("attributes") or {}
-        tags = attrs.get("tags") or {}
-        component, source = classify_component(tags, address, overrides)
-        account, region = account_region(attrs)
-        if account == "unknown":
-            account = sandbox_account
-        if region == "unknown":
-            region = sandbox_region
-        items[key] = {
-            "address": address,
-            "type": res["type"],
-            "name": res["name"],
-            "id": import_id,
-            "arn": attrs.get("arn"),
-            "account": account,
-            "region": region,
-            "managed": False,
-            "state": "planned",
-            "draft_kind": None,
-            "component": component,
-            "component_source": source,
-            "tags": tags,
-            "values": attrs,
-        }
-
-    # Overlay the requesting owner's drafts. `edit`/`delete` drafts annotate
-    # an existing live row; `new`/`adopt` drafts have no live counterpart, so
-    # surface them as their own `planned` rows (reading their HCL from the
-    # owner's draft namespace) so a just-created resource shows in the tree.
+    # Overlay the requesting owner's drafts from the leaf-structured overlay.
+    # `edit`/`delete` drafts annotate an existing live row; `new`/`adopt` drafts
+    # have no live counterpart, so surface them as their own `planned` rows,
+    # classified by their leaf coords (account/region/component).
     owner_drafts = drafts.load_drafts(settings.blueprint_root, owner)
-    owner_root = drafts.owner_dir(settings.blueprint_root, owner)
+    owner_base = leaves.owner_overlay_dir(settings.blueprint_root, owner)
     by_address = {it["address"]: it for it in items.values()}
-    for address, entry in owner_drafts.items():
+    for key, entry in owner_drafts.items():
+        # key = "<account>/<region>/<layer>/<component>::<type>.<name>"
+        leaf_rel, _, address = key.partition("::")
         target = by_address.get(address)
         if target is not None:
             target["draft_kind"] = entry.get("kind")
             continue
-        kind = entry.get("kind")
-        if kind not in ("new", "adopt"):
+        if entry.get("kind") not in ("new", "adopt"):
             continue
         type_, _, name = address.partition(".")
         attrs: dict[str, Any] = {}
-        bp_path = owner_root / f"bp.{type_}.{name}.tf"
-        if bp_path.exists():
+        res_path = owner_base / leaf_rel / f"{type_}.{name}.tf"
+        if res_path.exists():
             try:
-                parsed = _parse_resource_file(bp_path)
+                parsed = _parse_resource_file(res_path)
                 if parsed:
                     attrs = parsed.get("attributes") or {}
             except Exception:  # noqa: BLE001 — a bad draft file shouldn't 500
                 attrs = {}
-        tags = attrs.get("tags") or {}
-        component, source = classify_component(tags, address, overrides)
-        if component == "Unassigned" and entry.get("component"):
-            component, source = str(entry["component"]), "tag"
-        items[f"draft:{address}"] = {
+        items[f"draft:{key}"] = {
             "address": address,
             "type": type_,
             "name": name,
             "id": None,
             "arn": attrs.get("arn"),
-            "account": sandbox_account,
-            "region": sandbox_region,
+            "account": entry.get("account", "unknown"),
+            "region": entry.get("region", "unknown"),
             "managed": False,
             "state": "planned",
-            "draft_kind": kind,
-            "component": component,
-            "component_source": source,
-            "tags": tags,
+            "draft_kind": entry.get("kind"),
+            "component": entry.get("component", "Unassigned"),
+            "component_source": "leaf",
+            "tags": attrs.get("tags") or {},
             "values": attrs,
         }
 
