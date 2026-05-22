@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from devex_app import leaves
@@ -39,3 +41,24 @@ def test_boilerplate_filenames_are_the_known_set():
     assert leaves.BOILERPLATE_FILENAMES == frozenset(
         {"versions.tf", "variables.tf", "provider.tf", "terraform.tfvars"}
     )
+
+
+def test_ensure_leaf_seeds_boilerplate_idempotently(tmp_path: Path):
+    bp = tmp_path / "blueprint"
+    bp.mkdir()
+    coords = ("billing-prod-account", "us-east-1", "infra", "vpc")
+    d = leaves.ensure_leaf(bp, "alice", *coords)
+    assert d == bp / "drafts" / "alice" / "billing-prod-account/us-east-1/infra/vpc"
+    for fn in leaves.BOILERPLATE_FILENAMES:
+        assert (d / fn).exists()
+    # Idempotent + non-clobbering: edit tfvars, re-ensure, edit survives.
+    (d / "terraform.tfvars").write_text('aws_region = "edited"\n')
+    leaves.ensure_leaf(bp, "alice", *coords)
+    assert (d / "terraform.tfvars").read_text() == 'aws_region = "edited"\n'
+
+
+def test_ensure_leaf_rejects_owner_path_escape(tmp_path: Path):
+    bp = tmp_path / "blueprint"
+    bp.mkdir()
+    with pytest.raises(ValueError):
+        leaves.ensure_leaf(bp, "../evil", "a", "b", "c", "d")

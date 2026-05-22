@@ -4,6 +4,7 @@ devex-live overlay. A leaf is account/region/layer/component."""
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 # Path segments become directory names, so they must be safe path components:
 # lowercase letters, digits, hyphens; no separators, dots, or spaces.
@@ -118,3 +119,58 @@ def boilerplate_files(*, aws_region: str, environment: str) -> dict[str, str]:
         "provider.tf": _PROVIDER_TF,
         "terraform.tfvars": tfvars,
     }
+
+
+_OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def owner_overlay_dir(blueprint_root: Path, owner: str) -> Path:
+    if not _OWNER_RE.fullmatch(owner):
+        raise ValueError(f"Invalid owner {owner!r}")
+    base = blueprint_root.resolve()
+    candidate = (base / "drafts" / owner).resolve()
+    if base != candidate and base not in candidate.parents:
+        raise ValueError(f"owner {owner!r} escapes blueprint root")
+    return candidate
+
+
+def leaf_dir(
+    blueprint_root: Path,
+    owner: str,
+    account: str,
+    region: str,
+    layer: str,
+    component: str,
+) -> Path:
+    rel = leaf_relpath(account, region, layer, component)
+    return owner_overlay_dir(blueprint_root, owner) / rel
+
+
+def _env_from_account(account: str) -> str:
+    # billing-prod-account -> prod; fall back to the account slug.
+    for env in ("prod", "staging", "dev"):
+        if env in account.split("-"):
+            return env
+    return account
+
+
+def ensure_leaf(
+    blueprint_root: Path,
+    owner: str,
+    account: str,
+    region: str,
+    layer: str,
+    component: str,
+    *,
+    environment: str | None = None,
+) -> Path:
+    d = leaf_dir(blueprint_root, owner, account, region, layer, component)
+    d.mkdir(parents=True, exist_ok=True)
+    files = boilerplate_files(
+        aws_region=region, environment=environment or _env_from_account(account)
+    )
+    for fn, content in files.items():
+        p = d / fn
+        if not p.exists():  # never clobber edited boilerplate/tfvars
+            p.write_text(content, encoding="utf-8")
+    return d
