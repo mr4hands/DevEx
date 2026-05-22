@@ -54,6 +54,7 @@ class Settings:
         repo_root: Path,
         tofu_root: Path,
         blueprint_root: Path,
+        devex_live_root: Path,
         default_owner: str,
     ) -> None:
         self.anthropic_api_key = anthropic_api_key
@@ -64,6 +65,9 @@ class Settings:
         # workspace. Defaults to `live/blueprint/` so the canvas's
         # output never collides with the deployed dev environment.
         self.blueprint_root = blueprint_root
+        # The devex-live monorepo tree promote renders into. Defaults to
+        # `live/devex-live/` (the in-repo POC); a real repo at cutover.
+        self.devex_live_root = devex_live_root
         self.default_owner = default_owner
 
     @classmethod
@@ -74,11 +78,15 @@ class Settings:
         blueprint_root = (
             repo_root / os.environ.get("BLUEPRINT_ROOT", "live/blueprint")
         ).resolve()
+        devex_live_root = (
+            repo_root / os.environ.get("DEVEX_LIVE_ROOT", "live/devex-live")
+        ).resolve()
         return cls(
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY") or None,
             anthropic_model=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
             repo_root=repo_root,
             tofu_root=tofu_root,
             blueprint_root=blueprint_root,
+            devex_live_root=devex_live_root,
             default_owner=os.environ.get("DEVEX_OWNER", "local"),
         )
