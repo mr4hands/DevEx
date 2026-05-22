@@ -74,9 +74,9 @@ variable "use_localstack" {
 """
 
 _PROVIDER_TF = """\
-# Minimal provider. No backend block — Spacelift manages state. No assume_role
-# — Spacelift's per-stack AWS integration injects the account role. The
-# localstack overrides are no-ops against real AWS.
+# Minimal provider. Spacelift owns state per stack (none declared here). No
+# assume_role — Spacelift's per-stack AWS integration injects the account role.
+# The localstack overrides are no-ops against real AWS.
 provider "aws" {
   region = var.aws_region
 
