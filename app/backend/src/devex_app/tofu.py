@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .leaves import BOILERPLATE_FILENAMES
+
 
 class TofuError(RuntimeError):
     pass
@@ -189,10 +191,17 @@ def generate_resource_config(
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
         for src in sorted(blueprint_root.glob("*.tf")):
-            if src.name.startswith("bp."):
-                continue
+            if src.name not in BOILERPLATE_FILENAMES:
+                continue  # skip sibling resource files; keep only boilerplate
             (scratch / src.name).write_text(
                 src.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        # terraform.tfvars is boilerplate but not a *.tf glob match — copy so
+        # var values resolve in the scratch plan.
+        tfvars = blueprint_root / "terraform.tfvars"
+        if tfvars.exists():
+            (scratch / "terraform.tfvars").write_text(
+                tfvars.read_text(encoding="utf-8"), encoding="utf-8"
             )
         lock = blueprint_root / ".terraform.lock.hcl"
         if lock.exists():

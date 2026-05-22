@@ -2,7 +2,37 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import devex_app.leaves as leaves
 import devex_app.tofu as tofu
+
+
+def test_generate_config_excludes_sibling_resource_files(tmp_path, monkeypatch):
+    # A leaf with boilerplate + TWO resource files. generate-config for one must
+    # NOT carry the sibling resource body into the scratch dir.
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    for fn, content in leaves.boilerplate_files(aws_region="us-east-1", environment="prod").items():
+        (leaf / fn).write_text(content)
+    (leaf / "aws_vpc.a.tf").write_text('resource "aws_vpc" "a" { cidr_block = "10.0.0.0/16" }\n')
+    (leaf / "aws_s3_bucket.b.tf").write_text(
+        'import { to = aws_s3_bucket.b\n id = "b" }\nresource "aws_s3_bucket" "b" {}\n'
+    )
+
+    captured = {}
+
+    def fake_run(args, cwd, env=None):
+        captured["files"] = sorted(p.name for p in Path(cwd).glob("*.tf"))
+        out = Path(args[args.index("-generate-config-out") + 1])
+        out.write_text('resource "aws_s3_bucket" "b" { bucket = "b" }\n')
+        return ""
+
+    monkeypatch.setattr(tofu, "_run_tofu", fake_run)
+
+    tofu.generate_resource_config(leaf, "aws_s3_bucket", "b", "b")
+    assert "aws_vpc.a.tf" not in captured["files"]
+    assert "aws_s3_bucket.b.tf" not in captured["files"]
+    assert "import.tf" in captured["files"]
+    assert "provider.tf" in captured["files"] and "variables.tf" in captured["files"]
 
 
 def _fake_run_writes_generated(args, cwd, env=None):
