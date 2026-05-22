@@ -44,6 +44,13 @@ repos:
           # configs under modules/, live/, bootstrap/ are still scanned.
           - --skip-path
           - demo/
+          # `live/blueprint/` is the Blueprint canvas's gitignored sandbox —
+          # per-session runtime HCL (`bp.*.tf`, `drafts/`) the app writes, not
+          # committed source. checkov scans the working tree (not just git), so
+          # without this it gates throwaway sandbox files and blocks unrelated
+          # commits. The real blueprint workspace files carry no resources.
+          - --skip-path
+          - live/blueprint/
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

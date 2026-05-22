@@ -11,6 +11,9 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 !*.tfvars.example
+# devex-live leaves commit their per-stack tfvars (non-secret shape only:
+# region/CIDR/sizing). Secrets stay in Spacelift contexts; gitleaks guards.
+!live/devex-live/**/*.tfvars
 
 # Overrides
 override.tf
