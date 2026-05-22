@@ -24,7 +24,7 @@ def test_open_pr_branches_off_main_and_targets_main():
     assert url == "https://github.com/o/r/pull/1"
     # Branch is created off origin/main, never a feature branch.
     assert ["git", "fetch", "origin", "main"] in calls
-    assert any(a[:3] == ["git", "checkout"] and "origin/main" in a for a in calls)
+    assert any(a[:2] == ["git", "checkout"] and "origin/main" in a for a in calls)
     # PR targets main.
     pr = next(a for a in calls if a[:3] == ["gh", "pr", "create"])
     assert "--base" in pr and pr[pr.index("--base") + 1] == "main"
