@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -136,6 +137,35 @@ def providers_schema(tofu_root: Path, *, use_cache: bool = True) -> dict[str, An
     return schema
 
 
+# Values generate-config-out emits for unset optional/computed attributes.
+# A line assigning exactly one of these is a provider default — often
+# read-only (`tags_all = {}`) or mutually exclusive with another attribute
+# (an S3 bucket gets both `bucket` and `bucket_prefix = ""`, which the
+# provider rejects as conflicting). Dropping them yields apply-clean HCL.
+_EMPTY_GENERATED_VALUES = frozenset({"null", '""', "''", "{}", "[]"})
+
+_ASSIGN_RE = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.+?)\s*$")
+
+
+def _clean_generated_config(hcl: str) -> str:
+    """Strip empty/null provider-default attribute lines from
+    `tofu plan -generate-config-out` output.
+
+    generate-config-out (experimental) emits every optional+computed
+    attribute, including unset ones as `null` / `""` / `{}` / `[]`. Some are
+    mutually exclusive or read-only, so the raw output won't validate.
+    Conservative: only single-line scalar/empty-collection assignments are
+    removed; block bodies and non-empty values are untouched.
+    """
+    kept: list[str] = []
+    for line in hcl.splitlines():
+        m = _ASSIGN_RE.match(line)
+        if m and m.group(1) in _EMPTY_GENERATED_VALUES:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def generate_resource_config(
     blueprint_root: Path,
     type_: str,
@@ -145,22 +175,30 @@ def generate_resource_config(
     """Generate apply-clean HCL for an importable resource via
     `tofu plan -generate-config-out`.
 
-    Runs in an isolated scratch dir containing only the provider config +
-    a lone `import` block. The isolation is required: generate-config-out
-    SKIPS any address that already has a resource body, and the blueprint
-    file has a (thin) body. We reuse the blueprint workspace's initialized
-    plugins via TF_DATA_DIR so no re-`init` is needed. Returns the
+    Runs in an isolated scratch dir holding the workspace's real base config
+    (provider, backend, variables, versions) plus a lone `import` block.
+    Isolation is required: generate-config-out SKIPS any address that already
+    has a resource body, and the blueprint file has a (thin) body. The
+    `bp.*.tf` files are excluded for that reason; everything else is copied so
+    the provider config (and the explicit `backend "local"` block) is present
+    — otherwise reusing the workspace's `.terraform` via TF_DATA_DIR trips
+    tofu's "unsetting the previously set backend" guard. Returns the cleaned
     generated `resource { }` block text.
     """
     address = f"{type_}.{name}"
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp)
-        for fname in ("versions.tf", "providers.tf", "provider.tf"):
-            src = blueprint_root / fname
-            if src.exists():
-                (scratch / fname).write_text(
-                    src.read_text(encoding="utf-8"), encoding="utf-8"
-                )
+        for src in sorted(blueprint_root.glob("*.tf")):
+            if src.name.startswith("bp."):
+                continue
+            (scratch / src.name).write_text(
+                src.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        lock = blueprint_root / ".terraform.lock.hcl"
+        if lock.exists():
+            (scratch / ".terraform.lock.hcl").write_text(
+                lock.read_text(encoding="utf-8"), encoding="utf-8"
+            )
         escaped = import_id.replace("\\", "\\\\").replace('"', '\\"')
         (scratch / "import.tf").write_text(
             f'import {{\n  to = {address}\n  id = "{escaped}"\n}}\n',
@@ -171,20 +209,28 @@ def generate_resource_config(
         if terraform_dir.exists():
             env.setdefault("TF_DATA_DIR", str(terraform_dir))
         generated = scratch / "generated.tf"
-        _run_tofu(
-            [
-                "plan",
-                "-generate-config-out",
-                str(generated),
-                "-no-color",
-                "-input=false",
-            ],
-            cwd=scratch,
-            env=env,
-        )
-        if not generated.exists():
+        try:
+            _run_tofu(
+                [
+                    "plan",
+                    "-generate-config-out",
+                    str(generated),
+                    "-no-color",
+                    "-input=false",
+                ],
+                cwd=scratch,
+                env=env,
+            )
+        except TofuError:
+            # generate-config-out frequently exits non-zero (the generated
+            # config has provider-flagged conflicts) while still writing the
+            # file. A produced, non-empty file is the result we want; re-raise
+            # only when nothing usable was written.
+            if not (generated.exists() and generated.read_text(encoding="utf-8").strip()):
+                raise
+        if not (generated.exists() and generated.read_text(encoding="utf-8").strip()):
             raise TofuError("generate-config-out produced no output file")
-        return generated.read_text(encoding="utf-8").strip()
+        return _clean_generated_config(generated.read_text(encoding="utf-8")).strip()
 
 
 # ---------------------------------------------------------------------------
