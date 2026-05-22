@@ -174,3 +174,17 @@ def ensure_leaf(
         if not p.exists():  # never clobber edited boilerplate/tfvars
             p.write_text(content, encoding="utf-8")
     return d
+
+
+def prune_if_empty(leaf: Path) -> bool:
+    """Remove the leaf dir if it holds only boilerplate (no resource files), so
+    promote never creates an empty stack. Returns True if pruned."""
+    if not leaf.is_dir():
+        return False
+    tf = {p.name for p in leaf.glob("*.tf")}
+    if tf - BOILERPLATE_FILENAMES:
+        return False
+    for p in leaf.iterdir():
+        p.unlink()
+    leaf.rmdir()
+    return True

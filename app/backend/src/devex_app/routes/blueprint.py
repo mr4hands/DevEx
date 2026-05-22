@@ -32,7 +32,7 @@ import hcl2
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
-from .. import drafts
+from .. import drafts, leaves
 from ..settings import get_settings
 from ..tofu import TofuError, generate_resource_config, providers_schema
 from ._deps import resolve_owner
@@ -1063,7 +1063,10 @@ class DraftRequest(BaseModel):
     kind: Literal["new", "adopt", "edit", "delete"]
     type: str = Field(...)
     name: str = Field(...)
-    component: str | None = None
+    account: str = Field(...)
+    region: str = Field(...)
+    layer: str = Field(...)
+    component: str = Field(...)
     source_address: str | None = None
     import_id: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -1095,23 +1098,27 @@ def write_draft(
     req: DraftRequest, owner: str = Depends(resolve_owner)
 ) -> dict[str, Any]:
     settings = get_settings()
-    owner_dir = drafts.owner_dir(settings.blueprint_root, owner)
-    owner_dir.mkdir(parents=True, exist_ok=True)
-    address = f"{req.type}.{req.name}"
-    path = owner_dir / f"bp.{req.type}.{req.name}.tf"
+    try:
+        leaf = leaves.ensure_leaf(
+            settings.blueprint_root,
+            owner,
+            req.account,
+            req.region,
+            req.layer,
+            req.component,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    address = f"{req.type}.{req.name}"
+    res_path = leaf / f"{req.type}.{req.name}.tf"
     hcl = ""
     if req.kind == "delete":
-        # Marker only — remove any stale HCL for this address.
-        if path.exists():
-            path.unlink()
+        if res_path.exists():
+            res_path.unlink()
     else:
         read_only = _read_only_attr_names(req.type)
         authored = {k: v for k, v in req.attributes.items() if k not in read_only}
-        if req.component:
-            tags = dict(authored.get("tags") or {})
-            tags["Component"] = req.component
-            authored = {**authored, "tags": tags}
         resource_hcl = _render_resource_block(req.type, req.name, authored, {})
         if req.kind == "adopt" and req.import_id:
             hcl = (
@@ -1121,34 +1128,65 @@ def write_draft(
             )
         else:
             hcl = resource_hcl
-        tmp = path.with_suffix(".tf.tmp")
+        tmp = res_path.with_suffix(".tf.tmp")
         tmp.write_text(hcl, encoding="utf-8")
-        tmp.replace(path)
+        tmp.replace(res_path)
 
+    leaf_rel = leaves.leaf_relpath(req.account, req.region, req.layer, req.component)
     entry = {
         "kind": req.kind,
         "owner": owner,
+        "leaf": leaf_rel,
+        "account": req.account,
+        "region": req.region,
+        "layer": req.layer,
         "component": req.component,
         "source_address": req.source_address,
-        "target_module": _component_target_module(req.component),
     }
-    drafts.save_draft_entry(settings.blueprint_root, owner, address, entry)
-    return {"address": address, "owner": owner, "entry": entry, "hcl": hcl}
+    drafts.save_draft_entry(
+        settings.blueprint_root, owner, f"{leaf_rel}::{address}", entry
+    )
+    return {
+        "address": address,
+        "owner": owner,
+        "leaf": leaf_rel,
+        "entry": entry,
+        "hcl": hcl,
+    }
+
+
+class DiscardDraftRequest(BaseModel):
+    account: str
+    region: str
+    layer: str
+    component: str
 
 
 @router.delete("/blueprint/draft/{type_}/{name}")
 def discard_draft(
-    type_: str, name: str, owner: str = Depends(resolve_owner)
+    type_: str,
+    name: str,
+    req: DiscardDraftRequest,
+    owner: str = Depends(resolve_owner),
 ) -> dict[str, Any]:
     if not _DELETE_TYPE_RE.match(type_) or not _NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="Invalid type/name")
     settings = get_settings()
-    address = f"{type_}.{name}"
-    path = drafts.owner_dir(settings.blueprint_root, owner) / f"bp.{type_}.{name}.tf"
-    if path.exists():
-        path.unlink()
-    drafts.delete_draft_entry(settings.blueprint_root, owner, address)
-    return {"address": address, "owner": owner, "discarded": True}
+    try:
+        leaf = leaves.leaf_dir(
+            settings.blueprint_root, owner, req.account, req.region, req.layer, req.component
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    res_path = leaf / f"{type_}.{name}.tf"
+    if res_path.exists():
+        res_path.unlink()
+    leaf_rel = leaves.leaf_relpath(req.account, req.region, req.layer, req.component)
+    drafts.delete_draft_entry(
+        settings.blueprint_root, owner, f"{leaf_rel}::{type_}.{name}"
+    )
+    leaves.prune_if_empty(leaf)
+    return {"address": f"{type_}.{name}", "owner": owner, "discarded": True}
 
 
 @router.get("/blueprint/drafts")
