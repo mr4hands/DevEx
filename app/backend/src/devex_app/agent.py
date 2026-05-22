@@ -24,7 +24,6 @@ from claude_agent_sdk import (
     ResultMessage,
     StreamEvent,
     SystemMessage,
-    TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
