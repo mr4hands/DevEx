@@ -50,8 +50,10 @@ The Blueprint canvas authored resources as sandbox files at the root of
 3. Wire the module into an appropriate live root config with sensible
    inputs.
 4. Run \`tofu fmt\` and \`tofu validate\` until clean.
-5. Create a branch, commit (do NOT commit the \`bp.*.tf\` sandbox files
-   or \`_layout.json\`), push, and open a PR with \`gh pr create --fill\`.
+5. Create a branch **off the latest \`main\`** (fetch first; never branch
+   off another feature branch), commit (do NOT commit the \`bp.*.tf\`
+   sandbox files or \`_layout.json\`), push, and open a PR against \`main\`
+   with \`gh pr create --base main --fill\`.
 6. Report the PR URL back here.
 
 Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
@@ -101,9 +103,11 @@ change set. Apply each draft by kind:
 - "adopt": bring it under management via an \`import { }\` block.
 - "delete": remove the resource from its module (a destroy).
 
-Group by component, run \`tofu fmt\` + \`tofu validate\`, create a branch,
-commit (do NOT commit the \`drafts/\` sandbox), push, open a PR with
-\`gh pr create --fill\`, and report the URL. Do not run \`tofu apply\`.`;
+Group by component, run \`tofu fmt\` + \`tofu validate\`, create a branch
+**off the latest \`main\`** (fetch first; never branch off another feature
+branch), commit (do NOT commit the \`drafts/\` sandbox), push, open a PR
+against \`main\` with \`gh pr create --base main --fill\`, and report the
+URL. Do not run \`tofu apply\`.`;
 }
 
 // Prompt seeded into the chat by the Blueprint "commit to PR" button.
@@ -126,8 +130,10 @@ The Blueprint canvas authored resources as sandbox files at the root of
 3. Wire the module into an appropriate live root config with sensible
    inputs.
 4. Run \`tofu fmt\` and \`tofu validate\` until clean.
-5. Create a branch, commit (do NOT commit the \`bp.*.tf\` sandbox files
-   or \`_layout.json\`), push, and open a PR with \`gh pr create --fill\`.
+5. Create a branch **off the latest \`main\`** (fetch first; never branch
+   off another feature branch), commit (do NOT commit the \`bp.*.tf\`
+   sandbox files or \`_layout.json\`), push, and open a PR against \`main\`
+   with \`gh pr create --base main --fill\`.
 6. Report the PR URL back here.
 
 Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
