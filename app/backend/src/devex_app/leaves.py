@@ -4,6 +4,7 @@ devex-live overlay. A leaf is account/region/layer/component."""
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 # Path segments become directory names, so they must be safe path components:
@@ -188,3 +189,32 @@ def prune_if_empty(leaf: Path) -> bool:
         p.unlink()
     leaf.rmdir()
     return True
+
+
+def overlay_leaves(blueprint_root: Path, owner: str) -> list[str]:
+    """Relpaths (account/region/layer/component) of leaves in the owner overlay
+    that contain at least one resource file (non-boilerplate .tf)."""
+    base = owner_overlay_dir(blueprint_root, owner)
+    if not base.is_dir():
+        return []
+    found: list[str] = []
+    for versions in base.rglob("versions.tf"):
+        leaf = versions.parent
+        if any(p.name not in BOILERPLATE_FILENAMES for p in leaf.glob("*.tf")):
+            found.append(leaf.relative_to(base).as_posix())
+    return sorted(found)
+
+
+def render_overlay(blueprint_root: Path, owner: str, target_root: Path) -> list[str]:
+    """Copy each non-empty overlay leaf into target_root/<leaf>. Returns the
+    relpaths rendered."""
+    base = owner_overlay_dir(blueprint_root, owner)
+    rendered = overlay_leaves(blueprint_root, owner)
+    for rel in rendered:
+        src = base / rel
+        dst = target_root / rel
+        dst.mkdir(parents=True, exist_ok=True)
+        for p in src.glob("*"):
+            if p.is_file():
+                shutil.copy2(p, dst / p.name)
+    return rendered

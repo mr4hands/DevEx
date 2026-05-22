@@ -62,3 +62,27 @@ def test_ensure_leaf_rejects_owner_path_escape(tmp_path: Path):
     bp.mkdir()
     with pytest.raises(ValueError):
         leaves.ensure_leaf(bp, "../evil", "a", "b", "c", "d")
+
+
+def test_render_overlay_copies_leaves_into_target(tmp_path: Path):
+    bp = tmp_path / "blueprint"
+    bp.mkdir()
+    target = tmp_path / "devex-live"
+    target.mkdir()
+    coords = ("billing-prod-account", "us-east-1", "infra", "vpc")
+    leaf = leaves.ensure_leaf(bp, "alice", *coords)
+    (leaf / "aws_vpc.main.tf").write_text('resource "aws_vpc" "main" {}\n')
+
+    rendered = leaves.render_overlay(bp, "alice", target)
+    out = target / "billing-prod-account/us-east-1/infra/vpc"
+    assert rendered == [leaves.leaf_relpath(*coords)]
+    assert (out / "aws_vpc.main.tf").exists()
+    assert (out / "provider.tf").exists()
+
+
+def test_overlay_leaves_skips_boilerplate_only(tmp_path: Path):
+    bp = tmp_path / "blueprint"
+    bp.mkdir()
+    # boilerplate-only leaf (no resource files) is not surfaced
+    leaves.ensure_leaf(bp, "alice", "acct", "us-east-1", "infra", "empty")
+    assert leaves.overlay_leaves(bp, "alice") == []
