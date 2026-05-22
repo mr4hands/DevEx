@@ -98,8 +98,8 @@ billing-prod-account/us-east-1/infra/vpc/
 
 ```hcl
 module "vpc" {
-  source = "git::https://…/devex-modules.git//vpc?ref=v1.4.0"               # real repo
-  # source = "git::https://github.com/mr4hands/DevEx.git//modules/vpc?ref=main"  # POC catalog
+  source = "git::https://…/devex-modules.git//vpc?ref=v1.4.0"   # real repo
+  # source = "../../../../../../modules/vpc"                     # POC: this repo's catalog (offline)
 
   cidr_block = "10.20.0.0/16"
   az_count   = 3
@@ -127,7 +127,10 @@ The two scaling dimensions are handled without duplicating logic:
 - **Differences = inputs, per stack:**
   - non-secret *shape* (region, sizing, CIDR) in a committed per-leaf
     `terraform.tfvars` — visible/reviewable in the PR (not a `.tf`, so it doesn't
-    affect leaf detection);
+    affect leaf detection). The repo's blanket `*.tfvars` ignore is carved out
+    for `live/devex-live/**` via a `.gitignore` negation, since these files are
+    non-secret by policy (secrets stay in Spacelift contexts; gitleaks still
+    scans);
   - secrets + cross-cutting account context via **Spacelift contexts / stack env
     vars** (`TF_VAR_*`).
 - **dev/staging/prod** are *separate accounts* (env == account) → separate
@@ -193,8 +196,8 @@ the folder with `.tf` content is sufficient for the admin stack to pick it up.
 ## Phase 1 prototype (what gets built, vs Moto)
 
 1. `live/devex-live/billing-prod-account/us-east-1/infra/vpc/` — one reference
-   leaf: boilerplate + `terraform.tfvars` + a `module "vpc"` call sourced by git
-   ref to this repo's `modules/vpc` catalog module.
+   leaf: boilerplate + `terraform.tfvars` + a `module "vpc"` call sourced by
+   relative path to this repo's `modules/vpc` catalog module.
 2. A reference catalog module under `modules/` (reuse/extend the existing one)
    that creates a VPC + subnets + mandatory tags.
 3. `tofu init && tofu plan` for the leaf **against Moto** → resources plan
