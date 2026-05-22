@@ -30,7 +30,7 @@ def promote(req: PromoteRequest, owner: str = Depends(resolve_owner)) -> dict[st
     rendered = leaves.render_overlay(
         settings.blueprint_root, owner, settings.devex_live_root
     )
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d-%H%M%S")
     branch = f"devex/{owner}-{stamp}"
     devex_rel = settings.devex_live_root.relative_to(settings.repo_root).as_posix()
     pr_url = vcs.promote_branch(

@@ -73,7 +73,7 @@ def _type_meta(type_: str) -> dict[str, str]:
 
 @router.get("/schemas")
 def schemas(
-    types: list[str] = Query(default=None),
+    types: list[str] = Query(default=None),  # noqa: B008  (FastAPI idiom)
 ) -> dict[str, Any]:
     """Returns the resource schemas the Blueprint UI needs to render
     the param form for each supported type.
@@ -348,66 +348,6 @@ def _read_only_attr_names(type_: str) -> set[str]:
     return set()
 
 
-@router.post("/blueprint/resource")
-def write_resource(req: ResourceWriteRequest) -> dict[str, Any]:
-    """Writes the resource as its own `.tf` file under the blueprint
-    workspace. One file per resource so we can list/edit/delete without
-    HCL parsing (Phase 3 will need parsing for dependency edges; Phase
-    2 deliberately stays simple).
-
-    Idempotent on `(type, name)`. Posting twice with the same identity
-    overwrites; the file is the source of truth.
-    """
-    settings = get_settings()
-    settings.blueprint_root.mkdir(parents=True, exist_ok=True)
-
-    # `bp.` prefix keeps generated files visually distinct from the
-    # workspace's own `main.tf` / `versions.tf` / etc., and lets the
-    # list + delete paths filter cleanly. Files MUST live at the
-    # workspace root — OpenTofu's loader doesn't recurse into
-    # subdirectories.
-    filename = f"bp.{req.type}.{req.name}.tf"
-    path = settings.blueprint_root / filename
-    # Never author AWS-assigned attributes into HCL, even if the caller
-    # sends them (e.g. an adopt with a rich discovery payload). They're
-    # state, not config — surfaced read-only in the UI, not written.
-    read_only = _read_only_attr_names(req.type)
-    authored_attrs = {
-        k: v for k, v in req.attributes.items() if k not in read_only
-    }
-    resource_hcl = _render_resource_block(
-        req.type,
-        req.name,
-        authored_attrs,
-        req.blocks,
-    )
-    if req.import_id:
-        hcl = (
-            _render_import_block(req.type, req.name, req.import_id)
-            + "\n"
-            + resource_hcl
-        )
-    else:
-        hcl = resource_hcl
-    # Use a temp-write + rename so an interrupted write can't leave a
-    # half-formed `.tf` that `tofu validate` would choke on.
-    tmp = path.with_suffix(".tf.tmp")
-    tmp.write_text(hcl, encoding="utf-8")
-    tmp.replace(path)
-
-    if req.position is not None:
-        _update_layout(settings.blueprint_root, req.type, req.name, req.position)
-
-    return {
-        "type": req.type,
-        "name": req.name,
-        "path": str(path.relative_to(settings.repo_root))
-        if path.is_relative_to(settings.repo_root)
-        else str(path),
-        "hcl": hcl,
-    }
-
-
 def _render_import_block(type_: str, name: str, import_id: str) -> str:
     """Render an `import { to, id }` block. `to` is a bare resource
     address; `id` is a quoted, escaped literal. Emitted above the
@@ -657,24 +597,41 @@ def _merge_layout(
 
 class GenerateConfigRequest(BaseModel):
     """Body of POST /api/blueprint/generate-config — the 'generate clean
-    config' action for an adopted resource."""
+    config' action for an adopted resource in the owner's overlay leaf."""
 
     type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
     name: str = Field(..., description="HCL block label")
+    account: str = Field(...)
+    region: str = Field(...)
+    layer: str = Field(...)
+    component: str = Field(...)
 
 
 @router.post("/blueprint/generate-config")
-def generate_config(req: GenerateConfigRequest) -> dict[str, Any]:
+def generate_config(
+    req: GenerateConfigRequest, owner: str = Depends(resolve_owner)
+) -> dict[str, Any]:
     """Replace an adopted resource's thin pre-fill body with apply-clean
-    HCL from `tofu plan -generate-config-out`, preserving its import
-    block. Requires the resource to already exist on disk with an import
-    block (i.e. it was adopted, not authored from scratch)."""
+    HCL from `tofu plan -generate-config-out`, preserving its import block.
+    The resource must already exist in the owner's overlay leaf with an
+    import block (i.e. it was adopted, not authored from scratch)."""
     settings = get_settings()
-    path = settings.blueprint_root / f"bp.{req.type}.{req.name}.tf"
+    try:
+        leaf = leaves.leaf_dir(
+            settings.blueprint_root,
+            owner,
+            req.account,
+            req.region,
+            req.layer,
+            req.component,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    path = leaf / f"{req.type}.{req.name}.tf"
     if not path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"No blueprint file for {req.type}.{req.name}.",
+            detail=f"No draft for {req.type}.{req.name}.",
         )
     parsed = _parse_resource_file(path)
     import_id = parsed.get("import_id") if parsed else None
@@ -685,7 +642,7 @@ def generate_config(req: GenerateConfigRequest) -> dict[str, Any]:
         )
     try:
         generated_block = generate_resource_config(
-            settings.blueprint_root, req.type, req.name, import_id
+            leaf, req.type, req.name, import_id
         )
     except TofuError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -743,118 +700,39 @@ _REF_RE = re.compile(r"\$\{(aws_[a-zA-Z0-9_]+)\.([a-zA-Z_][a-zA-Z0-9_]*)(?:\.|})
 
 
 @router.get("/blueprint/resources")
-def list_resources() -> dict[str, Any]:
-    """Reads every `bp.*.tf` file at the blueprint workspace root +
-    the sidecar `_layout.json` and returns the canvas state.
-
-    Each resource is one node; edges are derived from HCL references
-    found in attribute values (e.g. `vpc_id = aws_vpc.main.id` ties
-    the subnet to the VPC). Resources written by the AI agent through
-    its `Edit`/`Write` tools land at the workspace root and flow
-    through this endpoint just like the canvas's own writes.
-    """
+def list_resources(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
+    """Reads the requesting owner's draft overlay (resource files across all
+    leaves) and returns the canvas state. Boilerplate files are skipped. Edge
+    derivation returns to the canvas in Phase 2b."""
     settings = get_settings()
-    # One-time migration of the old `resources/<type>.<name>.tf` layout
-    # to the flat `bp.<type>.<name>.tf` root layout. Idempotent.
-    _migrate_legacy_resources(settings.blueprint_root)
-
-    layout_path = settings.blueprint_root / "_layout.json"
-
-    if not settings.blueprint_root.exists():
-        return {
-            "blueprint_root": str(settings.blueprint_root),
-            "resources": [],
-            "edges": [],
-        }
-
-    layout: dict[str, dict[str, float]] = {}
-    if layout_path.exists():
-        try:
-            layout = json.loads(layout_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            # Corrupt layout file shouldn't break the canvas — fall
-            # back to laid-out-at-origin and let the user re-position.
-            layout = {}
-
+    base = leaves.owner_overlay_dir(settings.blueprint_root, owner)
     resources: list[dict[str, Any]] = []
-    refs: list[tuple[str, str]] = []  # (source_address, target_address)
-
-    for path in sorted(settings.blueprint_root.glob("bp.*.tf")):
-        try:
-            parsed = _parse_resource_file(path)
-        except (ValueError, Exception) as exc:  # noqa: BLE001
-            # A malformed file shouldn't take down the whole canvas.
-            # Emit a placeholder node with type+name recovered from the
-            # filename (we wrote it ourselves as `bp.<type>.<name>.tf`)
-            # so the user can still click Delete on it. Falls back to a
-            # synthetic placeholder pair if the filename doesn't match.
-            type_guess, name_guess = _split_filename(path.stem)
+    if base.is_dir():
+        for tf in sorted(base.rglob("*.tf")):
+            if tf.name in leaves.BOILERPLATE_FILENAMES:
+                continue
+            try:
+                parsed = _parse_resource_file(tf)
+            except Exception:  # noqa: BLE001
+                continue
+            if not parsed:
+                continue
+            leaf_rel = tf.parent.relative_to(base).as_posix()
             resources.append(
                 {
-                    "type": type_guess,
-                    "name": name_guess,
-                    "attributes": {},
-                    "import_id": None,
-                    "position": layout.get(
-                        f"{type_guess}.{name_guess}",
-                        {"x": 0, "y": 0},
-                    ),
-                    "parse_error": str(exc),
-                    "filename": path.name,
+                    "type": parsed["type"],
+                    "name": parsed["name"],
+                    "attributes": parsed["attributes"],
+                    "blocks": parsed.get("blocks") or {},
+                    "import_id": parsed.get("import_id"),
+                    "leaf": leaf_rel,
+                    "filename": tf.name,
                 }
             )
-            continue
-
-        if not parsed:
-            continue
-
-        type_ = parsed["type"]
-        name = parsed["name"]
-        address = f"{type_}.{name}"
-        attrs = parsed["attributes"]
-        blocks = parsed.get("blocks") or {}
-
-        resources.append(
-            {
-                "type": type_,
-                "name": name,
-                "attributes": attrs,
-                "blocks": blocks,
-                "import_id": parsed.get("import_id"),
-                "position": layout.get(address, {"x": 0, "y": 0}),
-                "filename": path.name,
-            }
-        )
-
-        # Walk attributes AND nested-block values for `${<type>.<name>...}`
-        # refs so an SG rule's `security_groups = [aws_security_group.x.id]`
-        # still draws an edge.
-        for ref_target in _find_references({"attrs": attrs, "blocks": blocks}):
-            refs.append((address, ref_target))
-
-    # Edges only count when both endpoints exist as resources on the
-    # canvas — references to things that aren't part of the blueprint
-    # (e.g., a hand-typed `data.aws_caller_identity.current.account_id`)
-    # are ignored.
-    known_addresses = {f"{r['type']}.{r['name']}" for r in resources}
-    edges = [
-        {"source": s, "target": t}
-        for s, t in refs
-        if s in known_addresses and t in known_addresses and s != t
-    ]
-    # Deduplicate; multiple attrs pointing at the same target only
-    # warrants one edge.
-    seen = set()
-    edges = [
-        e for e in edges
-        if (e["source"], e["target"]) not in seen
-        and not seen.add((e["source"], e["target"]))
-    ]
-
     return {
         "blueprint_root": str(settings.blueprint_root),
         "resources": resources,
-        "edges": edges,
+        "edges": [],
     }
 
 

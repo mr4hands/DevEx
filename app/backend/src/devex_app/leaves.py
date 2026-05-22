@@ -70,7 +70,7 @@ variable "common_tags" {
 
 variable "use_localstack" {
   type        = bool
-  description = "Point the provider at Moto. Set via TF_VAR_use_localstack; a no-op against real AWS where Spacelift injects the account role."
+  description = "Point the provider at Moto via TF_VAR_use_localstack; no-op on real AWS."
   default     = false
 }
 """
