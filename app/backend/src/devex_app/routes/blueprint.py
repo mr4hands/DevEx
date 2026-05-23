@@ -948,6 +948,7 @@ class DraftRequest(BaseModel):
     source_address: str | None = None
     import_id: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
 
     @field_validator("type")
     @classmethod
@@ -997,7 +998,7 @@ def write_draft(
     else:
         read_only = _read_only_attr_names(req.type)
         authored = {k: v for k, v in req.attributes.items() if k not in read_only}
-        resource_hcl = _render_resource_block(req.type, req.name, authored, {})
+        resource_hcl = _render_resource_block(req.type, req.name, authored, req.blocks)
         if req.kind == "adopt" and req.import_id:
             hcl = (
                 _render_import_block(req.type, req.name, req.import_id)
