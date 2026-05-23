@@ -14,7 +14,6 @@ import {
   useReactFlow,
   type Edge,
   type Node,
-  type NodeChange,
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -30,12 +29,10 @@ import {
 
 import {
   fetchBlueprintResources,
-  patchBlueprintLayout,
-  writeBlueprintResource,
+  writeDraft,
 } from "@/lib/api";
 import {
   autoLayoutNodes,
-  shouldAutoLayout,
 } from "@/lib/blueprintLayout";
 import {
   FAMILY_CLASSES,
@@ -52,20 +49,18 @@ import type {
   BlueprintEdge,
   BlueprintResource,
   ExistingResource,
+  LeafCoords,
 } from "@/lib/types";
 
 /**
  * The Blueprint canvas — drag resource tiles from the palette onto the
  * grid to plan an OpenTofu workspace visually.
  *
- * Phase 3 (this PR): the canvas is round-trippable. On mount + after
- * every Save, it fetches `/api/blueprint/resources` and reconciles
- * the React Flow state with what's on disk. Existing resources load
- * with their saved attributes + positions; dependency edges are
- * derived from inter-resource references in the HCL.
- *
- * Phase 4+ will add nested-block editing, auto-layout for newly-
- * loaded nodes, and a polished delete-node interaction.
+ * Phase 2b: the canvas is leaf-aware. Every node carries its overlay leaf
+ * path; drops require an active leaf and write drafts immediately (adopt-
+ * drop) or on Save (palette-drop). Layout is always auto-applied from the
+ * server response (no persisted _layout.json). The promote button calls
+ * the deterministic promote endpoint.
  */
 export type BlueprintNodeData = {
   resourceType: string;       // aws_s3_bucket
@@ -95,6 +90,9 @@ export type BlueprintNodeData = {
   importId?: string | null;
   /** True when this node represents an adopted (imported) resource. */
   imported?: boolean;
+  /** account/region/layer/component relpath this node was saved into.
+   *  Absent for un-saved drops (they use the active leaf on save). */
+  leaf?: string;
 } & Record<string, unknown>;  // index signature satisfies React Flow's Node constraint
 
 export type BlueprintNode = Node<BlueprintNodeData>;
@@ -110,7 +108,8 @@ export function BlueprintCanvas({
   onCanvasNodeDelete,
   panToAddress,
   onPanConsumed,
-  onCommitToPR,
+  activeLeaf,
+  onPromote,
   onAdopted,
 }: {
   selectedNodeId: string | null;
@@ -136,10 +135,10 @@ export function BlueprintCanvas({
    *  the address can clear and not re-pan on every render. */
   panToAddress?: string | null;
   onPanConsumed?: () => void;
-  /** Fired by the "commit to PR" button. The parent seeds a chat
-   *  prompt that drives the agent to promote the blueprint into a
-   *  reviewable PR. */
-  onCommitToPR?: () => void;
+  /** The active authoring leaf — drops require this to be set. */
+  activeLeaf: LeafCoords | null;
+  /** Fired by the "promote to PR" button. */
+  onPromote?: () => void;
   /** Called after an adopt-drop (drag from the unified tree) persists the
    *  import file, so the parent can refresh the canvas + the tree. */
   onAdopted?: () => void;
@@ -155,7 +154,8 @@ export function BlueprintCanvas({
         onCanvasNodeDelete={onCanvasNodeDelete}
         panToAddress={panToAddress}
         onPanConsumed={onPanConsumed}
-        onCommitToPR={onCommitToPR}
+        activeLeaf={activeLeaf}
+        onPromote={onPromote}
         onAdopted={onAdopted}
       />
     </ReactFlowProvider>
@@ -171,7 +171,8 @@ function CanvasInner({
   onCanvasNodeDelete,
   panToAddress,
   onPanConsumed,
-  onCommitToPR,
+  activeLeaf,
+  onPromote,
   onAdopted,
 }: {
   selectedNodeId: string | null;
@@ -182,7 +183,8 @@ function CanvasInner({
   onCanvasNodeDelete?: (node: BlueprintNode) => Promise<void>;
   panToAddress?: string | null;
   onPanConsumed?: () => void;
-  onCommitToPR?: () => void;
+  activeLeaf: LeafCoords | null;
+  onPromote?: () => void;
   onAdopted?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<BlueprintNode>([]);
@@ -197,8 +199,8 @@ function CanvasInner({
   // the chat agent's Edit/Write tool fires). The canvas reconciles
   // server state with any client-only nodes the user dropped but
   // hasn't saved yet — those keep their position; saved nodes get
-  // updated attributes + positions; newly-appeared nodes (typically
-  // AI-written) flash an amber ring.
+  // updated attributes; newly-appeared nodes (typically AI-written)
+  // flash an amber ring.
   useEffect(() => {
     let cancelled = false;
     const ac = new AbortController();
@@ -210,42 +212,16 @@ function CanvasInner({
         setLoadError(null);
         const newEdges = buildEdges(res.edges);
         let newArrivalIds: string[] = [];
-        // Drives the post-setState side effect: when auto-layout
-        // fires we persist the computed positions to `_layout.json`
-        // so subsequent reloads don't re-run dagre and shift the
-        // user's mental map.
-        let layoutToPersist: Record<string, { x: number; y: number }> | null = null;
 
         setNodes((prev) => {
           const reconciled = reconcileNodes(prev, res.resources);
           newArrivalIds = reconciled.newArrivals;
-          if (shouldAutoLayout(reconciled.newArrivals, reconciled.nodes)) {
-            const laidOut = autoLayoutNodes(reconciled.nodes, newEdges);
-            // Only persist for nodes that exist on disk (server-id format).
-            // Un-saved drops don't have a layout key yet.
-            const positions: Record<string, { x: number; y: number }> = {};
-            for (const n of laidOut) {
-              const expectedId = `${n.data.resourceType}.${n.data.name}`;
-              if (n.id === expectedId) {
-                positions[expectedId] = n.position;
-              }
-            }
-            if (Object.keys(positions).length > 0) {
-              layoutToPersist = positions;
-            }
-            return laidOut;
-          }
-          return reconciled.nodes;
+          // Overlay has no persisted positions; auto-layout keeps the graph
+          // readable. Un-saved client drops keep their dropped position via
+          // reconcileNodes (they aren't in `res.resources`).
+          return autoLayoutNodes(reconciled.nodes, newEdges);
         });
         setEdges(newEdges);
-
-        if (layoutToPersist) {
-          void patchBlueprintLayout(layoutToPersist).catch(() => {
-            // Layout persistence is best-effort. If it fails (offline,
-            // permissions, etc.), the canvas state is still correct;
-            // the next reload will just re-run auto-layout.
-          });
-        }
 
         // Clear the `justArrived` flag after ~2.5s so the pulse stops
         // on its own. If the user reloads again before the timer fires,
@@ -299,8 +275,12 @@ function CanvasInner({
   const onDrop = useCallback(
     (e: DragEvent) => {
       e.preventDefault();
+      if (!activeLeaf) {
+        setLoadError("Select or create a leaf first (tree → + leaf).");
+        return;
+      }
 
-      // Adopt-drop: an existing (discovered) resource dragged from the tree.
+      // Adopt-drop: a discovered resource dragged from the tree.
       const existingRaw = e.dataTransfer.getData(EXISTING_DRAG_TYPE);
       if (existingRaw) {
         let existing: ExistingResource;
@@ -311,6 +291,7 @@ function CanvasInner({
         }
         const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
         const adoptMeta = familyOf(existing.type);
+        const leafRel = `${activeLeaf.account}/${activeLeaf.region}/${activeLeaf.layer}/${activeLeaf.component}`;
         const adoptedNode: BlueprintNode = {
           id: `${existing.type}.${existing.name}`,
           type: "resource",
@@ -323,41 +304,39 @@ function CanvasInner({
             attributes: existing.summary_attributes,
             importId: existing.import_id,
             imported: true,
+            leaf: leafRel,
           },
         };
-        setNodes((nds) => {
-          const without = nds.filter((n) => n.id !== adoptedNode.id);
-          return [...without, adoptedNode];
-        });
+        setNodes((nds) => [
+          ...nds.filter((n) => n.id !== adoptedNode.id),
+          adoptedNode,
+        ]);
         onSelectNode(adoptedNode);
-        // Persist immediately: thin pre-fill body + import block.
-        void writeBlueprintResource({
+        void writeDraft({
+          kind: "adopt",
           type: existing.type,
           name: existing.name,
-          attributes: existing.summary_attributes,
           import_id: existing.import_id,
-          position,
+          attributes: existing.summary_attributes,
+          ...activeLeaf,
         })
           .then(() => onAdopted?.())
-          .catch((err) =>
-            setLoadError(`Adopt failed: ${(err as Error).message}`),
+          .catch((err: Error) =>
+            setLoadError(`Adopt failed: ${err.message}`),
           );
         return;
       }
 
-      // Palette-drop: a fresh resource (unchanged behavior).
+      // Palette-drop: a fresh resource. Persisted when the user saves the
+      // drawer form; we just place a client-only node tagged with the leaf.
       const resourceType = e.dataTransfer.getData(PALETTE_DRAG_TYPE);
       if (!resourceType) return;
       const meta = familyOf(resourceType);
-      const position = screenToFlowPosition({
-        x: e.clientX,
-        y: e.clientY,
-      });
-      // Default name: "<type-leaf>_<n>". Increment counter per type so
-      // a second drop of the same type doesn't collide with the first.
+      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       const leaf = resourceType.replace(/^aws_/, "");
       const n = (nextNameByType[resourceType] ?? 0) + 1;
       setNextNameByType((prev) => ({ ...prev, [resourceType]: n }));
+      const leafRel = `${activeLeaf.account}/${activeLeaf.region}/${activeLeaf.layer}/${activeLeaf.component}`;
       const newNode: BlueprintNode = {
         id: `${resourceType}.${leaf}_${n}_${Date.now().toString(36)}`,
         type: "resource",
@@ -367,12 +346,13 @@ function CanvasInner({
           name: `${leaf}_${n}`,
           family: meta.family,
           monogram: meta.monogram,
+          leaf: leafRel,
         },
       };
       setNodes((nds) => [...nds, newNode]);
       onSelectNode(newNode);
     },
-    [screenToFlowPosition, setNodes, nextNameByType, onSelectNode, onAdopted],
+    [activeLeaf, screenToFlowPosition, setNodes, nextNameByType, onSelectNode, onAdopted],
   );
 
   // Bubble selection up to the parent so the drawer can react.
@@ -447,79 +427,11 @@ function CanvasInner({
     onPanConsumed?.();
   }, [panToAddress, nodes, setCenter, onSelectNode, onPanConsumed]);
 
-  // Drag-to-save: when React Flow finishes a node drag, the change
-  // batch includes a position change with `dragging: false`. We pluck
-  // those out, debounce 400ms (so a long drag is one PATCH), and
-  // ship the new positions to `_layout.json` via the layout endpoint.
-  // The HCL file is untouched — only the sidecar moves.
-  const pendingPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
-  const positionFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const flushPendingPositions = useCallback(() => {
-    const positions = pendingPositionsRef.current;
-    pendingPositionsRef.current = {};
-    positionFlushTimerRef.current = null;
-    if (Object.keys(positions).length === 0) return;
-    void patchBlueprintLayout(positions).catch(() => {
-      // Best-effort: a failed PATCH just means the position will be
-      // recomputed on next reload (or re-saved on the next drag).
-    });
-  }, []);
-
-  const handleNodesChange = useCallback(
-    (changes: NodeChange<BlueprintNode>[]) => {
-      // Always let React Flow's internal state update — that's the
-      // visual feedback during the drag.
-      onNodesChange(changes);
-      // Collect post-drag positions for nodes that actually exist on
-      // disk (server-id format `<type>.<name>`). Un-saved drops don't
-      // have a layout entry to update.
-      for (const ch of changes) {
-        if (ch.type !== "position") continue;
-        if (ch.dragging) continue; // still mid-drag; wait for the end
-        if (!ch.position) continue;
-        const node = nodes.find((n) => n.id === ch.id);
-        if (!node) continue;
-        const expectedId = `${node.data.resourceType}.${node.data.name}`;
-        if (node.id !== expectedId) continue;
-        pendingPositionsRef.current[expectedId] = ch.position;
-      }
-      if (Object.keys(pendingPositionsRef.current).length === 0) return;
-      if (positionFlushTimerRef.current !== null) {
-        clearTimeout(positionFlushTimerRef.current);
-      }
-      positionFlushTimerRef.current = setTimeout(flushPendingPositions, 400);
-    },
-    [onNodesChange, nodes, flushPendingPositions],
-  );
-
-  // On unmount, fire any pending PATCH so a drag-then-tab-switch
-  // doesn't drop the unsent move.
-  useEffect(
-    () => () => {
-      if (positionFlushTimerRef.current !== null) {
-        clearTimeout(positionFlushTimerRef.current);
-        flushPendingPositions();
-      }
-    },
-    [flushPendingPositions],
-  );
-
   // Manual auto-layout — runs on demand when the user clicks the
-  // "Layout" button. Persists the result to `_layout.json` so reloads
-  // don't re-run dagre.
+  // "Layout" button.
   const runManualLayout = useCallback(() => {
     if (nodes.length === 0) return;
-    const laidOut = autoLayoutNodes(nodes, edges);
-    setNodes(laidOut);
-    const positions: Record<string, { x: number; y: number }> = {};
-    for (const n of laidOut) {
-      const expectedId = `${n.data.resourceType}.${n.data.name}`;
-      if (n.id === expectedId) positions[expectedId] = n.position;
-    }
-    if (Object.keys(positions).length > 0) {
-      void patchBlueprintLayout(positions).catch(() => {});
-    }
+    setNodes(autoLayoutNodes(nodes, edges));
   }, [nodes, edges, setNodes]);
 
   // Reflect external selection (e.g., parent clears) onto the canvas.
@@ -539,7 +451,7 @@ function CanvasInner({
         <ReactFlow
           nodes={nodesWithSelection}
           edges={edges}
-          onNodesChange={handleNodesChange}
+          onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onDragOver={onDragOver}
           onDrop={onDrop}
@@ -552,6 +464,16 @@ function CanvasInner({
         >
           <Background />
           <Controls position="bottom-right" />
+          <Panel
+            position="top-left"
+            className="!m-2"
+          >
+            <span className="px-1.5 h-6 inline-flex items-center text-[10px] font-mono rounded-sm border border-border bg-background/95 text-muted-foreground">
+              {activeLeaf
+                ? `leaf: ${activeLeaf.layer}/${activeLeaf.component}`
+                : "no leaf selected"}
+            </span>
+          </Panel>
           <Panel
             position="top-right"
             className="!m-2 flex items-center gap-1"
@@ -567,12 +489,12 @@ function CanvasInner({
             </button>
             <button
               type="button"
-              onClick={() => onCommitToPR?.()}
-              disabled={nodes.length === 0 || !onCommitToPR}
-              title="Ask the agent to promote these resources into a module + open a PR"
+              onClick={() => onPromote?.()}
+              disabled={nodes.length === 0 || !onPromote}
+              title="Promote staged leaves into a PR (deterministic — no agent)"
               className="px-1.5 h-6 text-[10px] font-mono rounded-sm border border-accent bg-accent text-white hover:opacity-90 transition-colors disabled:opacity-50"
             >
-              commit to PR
+              promote to PR
             </button>
           </Panel>
         </ReactFlow>
@@ -598,8 +520,8 @@ function CanvasInner({
  * the canvas:
  *
  *   - Nodes that exist on disk (matched by `<type>.<name>`) get their
- *     attributes + position refreshed from the server. Their canvas id
- *     stays stable so selection/highlight state doesn't flicker.
+ *     attributes refreshed from the server. Their canvas id stays stable
+ *     so selection/highlight state doesn't flicker.
  *   - Nodes that the user dropped but hasn't saved yet (no server
  *     match) are preserved as-is — losing un-saved work on every
  *     reload would feel awful.
@@ -653,7 +575,7 @@ function serverNodeFrom(
   return {
     id: existingId ?? `${r.type}.${r.name}`,
     type: "resource",
-    position: r.position,
+    position: r.position ?? { x: 0, y: 0 },
     data: {
       resourceType: r.type,
       name: r.name,
@@ -665,6 +587,7 @@ function serverNodeFrom(
       filename: r.filename,
       importId: r.import_id ?? null,
       imported: Boolean(r.import_id),
+      leaf: r.leaf,
     },
   };
 }
