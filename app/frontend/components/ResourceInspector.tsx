@@ -9,7 +9,7 @@ import {
 } from "@/components/ResourceDrawer";
 import { ResourceForm, type FormBlocks } from "@/components/ResourceForm";
 import { fmtValue } from "@/lib/resourceFields";
-import type { InventoryResource, Resource, ResourceSchema } from "@/lib/types";
+import type { InventoryResource, LeafCoords, Resource, ResourceSchema } from "@/lib/types";
 
 /**
  * Unified right-pane inspector for a tree-selected resource. View mode
@@ -18,10 +18,15 @@ import type { InventoryResource, Resource, ResourceSchema } from "@/lib/types";
  * values, shows a diff vs live, and saves the change as an owner-scoped
  * draft via the Phase-1 draft API. Managed → `edit` draft, unmanaged →
  * `adopt` draft (with the import id).
+ *
+ * Decision: managed resources with no draft are PARKED — Edit/Delete
+ * buttons are hidden because there's no leaf path to write into. Draft
+ * rows carry their own coords; unmanaged rows adopt into the active leaf.
  */
 export function ResourceInspector({
   item,
   change,
+  activeLeaf,
   onClose,
   onOpenInPlanDiff,
   onReassign,
@@ -29,6 +34,8 @@ export function ResourceInspector({
 }: {
   item: InventoryResource;
   change?: ChangeSummary | null;
+  /** The current authoring leaf. Adopt targets this; null disables adopt. */
+  activeLeaf: LeafCoords | null;
   onClose: () => void;
   onOpenInPlanDiff?: (r: Resource) => void;
   onReassign?: (address: string, component: string) => Promise<void> | void;
@@ -59,6 +66,21 @@ export function ResourceInspector({
     }),
     [item],
   );
+
+  // A draft row carries its leaf coords; adopting an unmanaged row uses the
+  // active leaf. Managed rows with no draft have no leaf → null (parked).
+  const draftCoords: LeafCoords | null = useMemo(() => {
+    if (item.draft_kind) {
+      return {
+        account: item.account,
+        region: item.region,
+        layer: item.layer,
+        component: item.component ?? "",
+      };
+    }
+    if (isUnmanaged) return activeLeaf;
+    return null;
+  }, [item, isUnmanaged, activeLeaf]);
 
   const enterEdit = useCallback(() => {
     setEditing(true);
@@ -95,7 +117,7 @@ export function ResourceInspector({
   }, [schema, attrs, item.values]);
 
   const save = useCallback(async () => {
-    if (!schema) return;
+    if (!schema || !draftCoords) return;
     setSaveState({ status: "saving" });
     try {
       const editable = new Set(
@@ -108,9 +130,6 @@ export function ResourceInspector({
         if (typeof v === "string" && v.trim() === "") continue;
         clean[k] = v;
       }
-      // Preserve the resource's existing draft kind (a `new`/`adopt`/`edit`
-      // draft stays that kind on re-save). Only fall back to deriving it
-      // from state for a resource that isn't a draft yet.
       const existing = item.draft_kind;
       const kind: "new" | "adopt" | "edit" =
         existing === "new" || existing === "adopt" || existing === "edit"
@@ -124,48 +143,42 @@ export function ResourceInspector({
         name: item.name,
         source_address: item.address,
         import_id: kind === "adopt" ? (item.id ?? undefined) : undefined,
-        component: item.component,
         attributes: clean,
+        ...draftCoords,
       });
       setEditing(false);
       onChanged();
     } catch (e) {
       setSaveState({ status: "error", message: (e as Error).message });
     }
-  }, [schema, attrs, isUnmanaged, item, onChanged]);
+  }, [schema, attrs, isUnmanaged, item, onChanged, draftCoords]);
 
   const discard = useCallback(async () => {
     try {
-      if (item.draft_kind) {
-        await discardDraft(item.type, item.name);
+      if (item.draft_kind && draftCoords) {
+        await discardDraft(item.type, item.name, draftCoords);
         onChanged();
       }
     } finally {
       setEditing(false);
     }
-  }, [item, onChanged]);
+  }, [item, onChanged, draftCoords]);
 
-  // View-mode delete: discard a pending draft, else (managed) propose a
-  // destroy as a `delete` draft. Unmanaged-with-no-draft has nothing to
-  // delete.
   const hasDraft = !!item.draft_kind;
-  const canDelete = hasDraft || item.managed;
+  // Park managed edit/delete (no leaf path). Draft rows can be discarded;
+  // unmanaged rows can be adopted into the active leaf.
+  const canDelete = hasDraft && !!draftCoords;
   const deleteResource = useCallback(async () => {
-    if (hasDraft) {
-      await discardDraft(item.type, item.name);
-    } else if (item.managed) {
-      await writeDraft({
-        kind: "delete",
-        type: item.type,
-        name: item.name,
-        source_address: item.address,
-        component: item.component,
-      });
+    if (hasDraft && draftCoords) {
+      await discardDraft(item.type, item.name, draftCoords);
+      onChanged();
     }
-    onChanged();
-  }, [hasDraft, item, onChanged]);
+  }, [hasDraft, item, onChanged, draftCoords]);
 
   if (!editing) {
+    // Managed rows with no draft are parked (no leaf path). Drafts edit in
+    // place; unmanaged rows adopt into the active leaf (needs one selected).
+    const canEdit = hasDraft || (isUnmanaged && !!activeLeaf);
     return (
       <ResourceDrawer
         resource={resource}
@@ -174,12 +187,10 @@ export function ResourceInspector({
         onOpenInPlanDiff={onOpenInPlanDiff}
         component={item.component}
         onReassign={onReassign}
-        onEdit={enterEdit}
+        onEdit={canEdit ? enterEdit : undefined}
         editLabel={isUnmanaged ? "Adopt & edit" : "Edit"}
         onDelete={canDelete ? () => void deleteResource() : undefined}
-        deleteLabel={
-          hasDraft ? "Discard draft" : "Delete (propose destroy)"
-        }
+        deleteLabel="Discard draft"
       />
     );
   }
