@@ -71,6 +71,12 @@ function authorableLeaf(
   component: string,
 ): LeafCoords | null {
   const coords = { account, region, layer, component };
+  // The unassigned buckets (managed/unmanaged rows with no leaf path) are not
+  // authorable. They fail COORD_RE today via the "Unassigned" component, but
+  // guard on casing too so a lowercase backend value can't slip an "+add" in.
+  if (layer.toLowerCase() === "unassigned" || component.toLowerCase() === "unassigned") {
+    return null;
+  }
   return Object.values(coords).every((c) => COORD_RE.test(c)) ? coords : null;
 }
 

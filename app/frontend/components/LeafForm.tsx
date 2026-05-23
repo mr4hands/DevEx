@@ -64,10 +64,14 @@ export function LeafForm({
           const bad = val.length > 0 && !COORD_RE.test(val);
           return (
             <div key={key}>
-              <label className="text-[10px] uppercase tracking-wide text-foreground font-mono">
+              <label
+                htmlFor={`leaf-${key}`}
+                className="text-[10px] uppercase tracking-wide text-foreground font-mono"
+              >
                 {label}
               </label>
               <input
+                id={`leaf-${key}`}
                 className="mt-1 w-full text-xs font-mono rounded-sm border border-border bg-background px-2 py-1 outline-none focus:border-accent"
                 value={val}
                 placeholder={placeholder}
