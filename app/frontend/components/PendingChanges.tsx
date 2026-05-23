@@ -7,15 +7,21 @@ import type { Draft } from "@/lib/types";
 
 /**
  * Slim bar summarizing the current owner's pending drafts, grouped by
- * component, with a "commit to PR" action. Renders nothing when there are
- * no drafts. Refetches whenever `refreshKey` changes.
+ * component, with a "promote to PR" action. Renders nothing when there are
+ * no drafts and no result to show. Refetches whenever `refreshKey` changes.
  */
 export function PendingChanges({
   refreshKey,
-  onCommit,
+  onPromote,
+  result,
+  onDismissResult,
 }: {
   refreshKey?: number;
-  onCommit: () => void;
+  /** Fires the deterministic promote (parent calls promoteDrafts). */
+  onPromote: () => void;
+  /** Set by the parent after promote resolves/rejects. */
+  result: { url: string } | { error: string } | null;
+  onDismissResult: () => void;
 }) {
   const [drafts, setDrafts] = useState<Draft[]>([]);
 
@@ -44,25 +50,52 @@ export function PendingChanges({
     return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [drafts]);
 
-  if (drafts.length === 0) return null;
+  if (drafts.length === 0 && !result) return null;
 
   return (
-    <div className="shrink-0 border-b border-border bg-amber-50/60 dark:bg-amber-950/30 px-3 py-1.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] font-mono text-amber-800 dark:text-amber-300">
-          {drafts.length} pending
-        </span>
-        <span className="flex-1 min-w-0 truncate text-[10px] font-mono text-muted-foreground">
-          {byComponent.map(([c, n]) => `${c} ${n}`).join(" · ")}
-        </span>
-        <button
-          type="button"
-          onClick={onCommit}
-          className="shrink-0 h-6 px-2 inline-flex items-center justify-center text-[10px] font-medium rounded-sm bg-accent text-white hover:opacity-90 transition-colors"
-        >
-          commit to PR
-        </button>
-      </div>
+    <div className="shrink-0 border-b border-border bg-amber-50/60 dark:bg-amber-950/30 px-3 py-1.5 space-y-1">
+      {drafts.length > 0 && (
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-amber-800 dark:text-amber-300">
+            {drafts.length} pending
+          </span>
+          <span className="flex-1 min-w-0 truncate text-[10px] font-mono text-muted-foreground">
+            {byComponent.map(([c, n]) => `${c} ${n}`).join(" · ")}
+          </span>
+          <button
+            type="button"
+            onClick={onPromote}
+            className="shrink-0 h-6 px-2 inline-flex items-center justify-center text-[10px] font-medium rounded-sm bg-accent text-white hover:opacity-90 transition-colors"
+          >
+            promote to PR
+          </button>
+        </div>
+      )}
+      {result && (
+        <div className="flex items-center gap-2 text-[10px] font-mono">
+          {"url" in result ? (
+            <a
+              href={result.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex-1 min-w-0 truncate text-emerald-700 dark:text-emerald-400 underline"
+            >
+              PR opened: {result.url}
+            </a>
+          ) : (
+            <span className="flex-1 min-w-0 truncate text-red-600 dark:text-red-400">
+              ✗ {result.error}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={onDismissResult}
+            className="shrink-0 h-5 px-1.5 rounded-sm text-muted-foreground hover:bg-muted"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }
