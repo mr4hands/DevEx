@@ -36,6 +36,18 @@ def test_adopt_draft_writes_import_block(client, blueprint_env):
     assert "import {" in body and 'id = "vpc-123"' in body
 
 
+def test_new_draft_renders_nested_blocks(client, blueprint_env):
+    res = client.post("/api/blueprint/draft", json={
+        "kind": "new", "type": "aws_s3_bucket", "name": "logs",
+        "attributes": {"bucket": "my-logs"},
+        "blocks": {"versioning": [{"attributes": {"enabled": True}, "blocks": {}}]},
+        **COORDS,
+    })
+    assert res.status_code == 200, res.text
+    body = (_leaf(blueprint_env) / "aws_s3_bucket.logs.tf").read_text()
+    assert "versioning {" in body and "enabled = true" in body
+
+
 def test_discard_draft_removes_resource_file(client, blueprint_env):
     client.post("/api/blueprint/draft", json={
         "kind": "new", "type": "aws_vpc", "name": "main",

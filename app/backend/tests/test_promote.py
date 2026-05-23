@@ -35,3 +35,28 @@ def test_promote_with_no_drafts_is_400(client, blueprint_env, monkeypatch):
     promote_mod.get_settings.cache_clear()
     res = client.post("/api/blueprint/promote", json={})
     assert res.status_code == 400
+
+
+def test_promote_aborts_cleanly_when_vcs_fails(client, blueprint_env, monkeypatch):
+    devex_live = blueprint_env.parent / "devex-live"
+    monkeypatch.setenv("DEVEX_LIVE_ROOT", str(devex_live))
+    promote_mod.get_settings.cache_clear()
+
+    client.post("/api/blueprint/draft", json={
+        "kind": "new", "type": "aws_vpc", "name": "main",
+        "attributes": {"cidr_block": "10.0.0.0/16"},
+        "account": "billing-prod-account", "region": "us-east-1",
+        "layer": "infra", "component": "net",
+    })
+
+    def boom(**kw):
+        raise vcs.PromoteError("commit failed", output="checkov CKV2_AWS_12")
+    monkeypatch.setattr(vcs, "promote_branch", boom)
+
+    res = client.post("/api/blueprint/promote", json={})
+    assert res.status_code == 422, res.text
+    assert "checkov" in res.json()["detail"]
+    # Rendered leaf removed so devex-live isn't left polluted.
+    assert not (devex_live / "billing-prod-account/us-east-1/infra/net").exists()
+    # Promote failed -> drafts NOT cleared.
+    assert client.get("/api/blueprint/drafts").json()["drafts"] != []

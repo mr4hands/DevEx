@@ -3,16 +3,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
-  deleteBlueprintResource,
+  discardDraft,
   fetchExistingResources,
   fetchSchemas,
   generateBlueprintConfig,
-  writeBlueprintResource,
+  writeDraft,
 } from "@/lib/api";
 import { FAMILY_CLASSES, familyOf } from "@/lib/resourceFamilies";
 import type { BlueprintNode } from "@/components/BlueprintCanvas";
 import { ResourceForm, type FormBlocks } from "@/components/ResourceForm";
-import type { ResourceSchema } from "@/lib/types";
+import type { LeafCoords, ResourceSchema } from "@/lib/types";
 
 /**
  * Right-pane drawer for the Blueprint canvas. Renders the schema-driven
@@ -33,8 +33,17 @@ type SaveState =
   | { status: "saved"; path: string }
   | { status: "error"; message: string };
 
+// "a/r/l/c" -> LeafCoords or null.
+function coordsFromLeaf(leaf?: string): LeafCoords | null {
+  if (!leaf) return null;
+  const [account, region, layer, component] = leaf.split("/");
+  if (!account || !region || !layer || !component) return null;
+  return { account, region, layer, component };
+}
+
 export function BlueprintNodeDrawer({
   node,
+  activeLeaf,
   onClose,
   onRename,
   onResourceWritten,
@@ -42,6 +51,8 @@ export function BlueprintNodeDrawer({
   onNavigateToRef,
 }: {
   node: BlueprintNode | null;
+  /** Authoring leaf for a freshly-dropped node that has no leaf yet. */
+  activeLeaf: LeafCoords | null;
   onClose: () => void;
   /** Fired when Save succeeds with a new name so the canvas can update
    *  the node's label without a full reload. */
@@ -208,6 +219,14 @@ export function BlueprintNodeDrawer({
 
   const handleSave = useCallback(async () => {
     if (!node || !formState || !schema) return;
+    const coords = coordsFromLeaf(node.data.leaf as string | undefined) ?? activeLeaf;
+    if (!coords) {
+      setSaveState({
+        status: "error",
+        message: "Select or create a leaf first (tree → + leaf).",
+      });
+      return;
+    }
     setSaveState({ status: "saving" });
     try {
       // Only persist editable schema attributes. Imported/generated
@@ -224,16 +243,17 @@ export function BlueprintNodeDrawer({
         if (typeof v === "string" && v.trim() === "") continue;
         cleanAttrs[k] = v;
       }
-      const res = await writeBlueprintResource({
+      const adopted = Boolean(node.data.imported || node.data.importId);
+      await writeDraft({
+        kind: adopted ? "adopt" : "new",
         type: node.data.resourceType,
         name: formState.name,
+        import_id: adopted ? (node.data.importId ?? undefined) : undefined,
         attributes: cleanAttrs,
         blocks: formState.blocks,
-        position: node.position
-          ? { x: node.position.x, y: node.position.y }
-          : null,
+        ...coords,
       });
-      setSaveState({ status: "saved", path: res.path });
+      setSaveState({ status: "saved", path: `${coords.layer}/${coords.component}` });
       if (onRename && formState.name !== node.data.name) {
         onRename(node.id, formState.name);
       }
@@ -241,17 +261,17 @@ export function BlueprintNodeDrawer({
     } catch (e) {
       setSaveState({ status: "error", message: (e as Error).message });
     }
-  }, [node, formState, schema, onRename, onResourceWritten]);
+  }, [node, formState, schema, onRename, onResourceWritten, activeLeaf]);
 
   const handleDelete = useCallback(async () => {
     if (!node) return;
-    const hasFile =
-      node.data.attributes !== undefined ||
-      node.id === `${node.data.resourceType}.${node.data.name}`;
+    const coords = coordsFromLeaf(node.data.leaf as string | undefined);
     setSaveState({ status: "saving" });
     try {
-      if (hasFile) {
-        await deleteBlueprintResource(node.data.resourceType, node.data.name);
+      // Only a saved node (has a leaf) needs a backend discard; an unsaved
+      // drop just leaves the canvas.
+      if (coords) {
+        await discardDraft(node.data.resourceType, node.data.name, coords);
       }
       setSaveState({ status: "idle" });
       onResourceDeleted?.(node.id);
@@ -389,7 +409,7 @@ export function BlueprintNodeDrawer({
               type="button"
               onClick={handleDelete}
               disabled={saveState.status === "saving"}
-              title="Remove resource (deletes the .tf file if it was saved)"
+              title="Remove resource (discards the draft if it was saved)"
               className={
                 "inline-flex items-center justify-center h-8 px-3 border border-border hover:bg-muted hover:border-red-300 dark:hover:border-red-800 text-xs text-foreground rounded-sm transition-colors disabled:opacity-50 " +
                 (node.data.parseError ? "flex-1" : "")
@@ -400,7 +420,7 @@ export function BlueprintNodeDrawer({
           </div>
           {saveState.status === "saved" && (
             <div className="text-[10px] font-mono text-emerald-700 dark:text-emerald-400 break-all">
-              ✓ wrote {saveState.path}
+              ✓ saved to {saveState.path}
             </div>
           )}
           {saveState.status === "error" && (

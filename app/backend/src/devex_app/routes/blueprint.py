@@ -1,29 +1,20 @@
 """Blueprint canvas routes.
 
 The Blueprint tab in the UI is a visual builder for OpenTofu config.
-Users drag resource tiles onto a canvas, and the form pane on the
-right edits the resource's attributes. The HCL the canvas writes
-lives in the workspace pointed at by `settings.blueprint_root`
-(default: `live/blueprint/`).
-
-Generated files use a `bp.<type>.<name>.tf` naming convention and
-live at the workspace root (not in a subdirectory). The root-only
-placement is mandatory: OpenTofu's root-module loader doesn't recurse,
-so files in a `resources/` subdir are silently invisible to `tofu plan`.
-The `bp.` prefix keeps them visually distinct from hand-authored
-files (`main.tf`, `versions.tf`, etc.) and easy to gitignore.
+Users author resource tiles; the HCL lives in a per-owner draft overlay
+under `settings.blueprint_root/drafts/<owner>/<account>/<region>/<layer>/<component>/`.
 
 Routes:
 - `GET /api/schemas` — provider schema for the supported types.
-- `POST /api/blueprint/resource` — writes one resource per file.
-- `GET /api/blueprint/resources` — canvas state (nodes + edges).
-- `DELETE /api/blueprint/resource/{type}/{name}` — removes a file.
-- `PATCH /api/blueprint/layout` — drag-to-save canvas positions.
+- `POST /api/blueprint/generate-config` — generate clean HCL for an adopted resource.
+- `GET /api/blueprint/resources` — canvas state (nodes + edges) from the owner overlay.
+- `POST /api/blueprint/draft` — write/delete a resource in the owner draft overlay.
+- `DELETE /api/blueprint/draft/{type}/{name}` — discard a draft resource.
+- `GET /api/blueprint/drafts` — list all draft entries for the owner.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -239,7 +230,7 @@ def _normalize_block_types(
 
 
 # ---------------------------------------------------------------------------
-# POST /api/blueprint/resource — write a resource block to HCL
+# HCL write helpers — shared by draft write and generate-config routes
 # ---------------------------------------------------------------------------
 
 # Valid OpenTofu identifier for resource labels — same rule the parser
@@ -247,11 +238,10 @@ def _normalize_block_types(
 # the filesystem.
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
-# Format-only check for resource-type identifiers (used by DELETE +
-# parse-error fallback). Looser than `SUPPORTED_TYPES` membership
-# because delete needs to work for orphan files, AI-agent-written
-# resources, and types that get added between client and server
-# deploys.
+# Format-only check for resource-type identifiers. Looser than
+# `SUPPORTED_TYPES` membership because discard/delete needs to work for
+# orphan files, AI-agent-written resources, and types added between
+# client and server deploys.
 _DELETE_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]+$")
 
 
@@ -259,69 +249,12 @@ class BlockInstance(BaseModel):
     """One instance of a nested HCL block (e.g., one `ingress` rule
     inside an `aws_security_group`).
 
-    `attributes` are the block's leaf-level values. `blocks` is the
-    same map shape as on `ResourceWriteRequest`, recursively — so
-    `lifecycle_rule.transition` etc. round-trip through the same
-    structure all the way down."""
+    `attributes` are the block's leaf-level values. `blocks` follows the
+    same recursive shape, so `lifecycle_rule.transition` etc. round-trip
+    all the way down."""
 
     attributes: dict[str, Any] = Field(default_factory=dict)
     blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
-
-
-class ResourceWriteRequest(BaseModel):
-    """The body of `POST /api/blueprint/resource`.
-
-    `attributes` are user-supplied leaf-level values keyed by attribute
-    name (string / number / bool / JSON-serializable list-or-map).
-
-    `blocks` carries nested HCL blocks (`versioning {}`, `ingress {}`,
-    `lifecycle_rule {}`, etc.) as a map of `block_name → list[BlockInstance]`.
-    The list shape works for every nesting_mode: `single` blocks have
-    0 or 1 entries; `list`/`set` blocks have N entries; `map` blocks
-    are flattened to a list with the key in the attributes (Phase 4
-    doesn't fully support map mode — most AWS schemas use list/set
-    for the resources we care about).
-    """
-
-    type: str = Field(..., description="Resource type, e.g. aws_s3_bucket")
-    name: str = Field(..., description="HCL block label, e.g. 'logs'")
-    import_id: str | None = Field(
-        default=None,
-        description="Real cloud id. When set, an `import { to, id }` block is "
-        "emitted above the resource so OpenTofu adopts the existing resource "
-        "instead of creating a new one.",
-    )
-    attributes: dict[str, Any] = Field(default_factory=dict)
-    blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
-    position: dict[str, float] | None = Field(
-        default=None,
-        description="Optional canvas (x, y) coords. Stored in `_layout.json` "
-        "sidecar so the canvas can restore positions across reloads.",
-    )
-
-    @field_validator("type")
-    @classmethod
-    def _type_valid(cls, v: str) -> str:
-        # Format-only — adoption of existing resources can surface any
-        # type, so we no longer gate writes to SUPPORTED_TYPES. The
-        # supported list still drives the palette + cosmetics.
-        if not _DELETE_TYPE_RE.match(v):
-            raise ValueError(
-                f"Invalid resource type identifier {v!r}. "
-                "Must look like aws_s3_bucket."
-            )
-        return v
-
-    @field_validator("name")
-    @classmethod
-    def _name_valid(cls, v: str) -> str:
-        if not _NAME_RE.match(v):
-            raise ValueError(
-                f"Invalid resource name {v!r}. "
-                "Must be a valid OpenTofu identifier "
-                "(start with letter or underscore, then letters/digits/_)."
-            )
-        return v
 
 
 def _read_only_attr_names(type_: str) -> set[str]:
@@ -549,47 +482,6 @@ def _heredoc(value: str) -> str:
     return f"<<EOT\n{body}EOT"
 
 
-def _update_layout(
-    blueprint_root: Path, type_: str, name: str, position: dict[str, float]
-) -> None:
-    """Persist canvas position to a sidecar `_layout.json` so reloading
-    the workspace restores the user's spatial arrangement. The file lives
-    alongside the `resources/` dir so it's easy to spot but doesn't end
-    up parsed by OpenTofu."""
-    _merge_layout(
-        blueprint_root,
-        {
-            f"{type_}.{name}": {
-                "x": position.get("x", 0),
-                "y": position.get("y", 0),
-            }
-        },
-    )
-
-
-def _merge_layout(
-    blueprint_root: Path,
-    entries: dict[str, dict[str, float]],
-) -> None:
-    """Apply a batch of `<addr> → {x, y}` updates to `_layout.json`,
-    creating the file if missing. Used by both the single-resource
-    write path (POST) and the drag-to-save layout PATCH endpoint."""
-    layout_path = blueprint_root / "_layout.json"
-    if layout_path.exists():
-        try:
-            layout = json.loads(layout_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            layout = {}
-    else:
-        layout = {}
-    for addr, pos in entries.items():
-        layout[addr] = {"x": pos.get("x", 0), "y": pos.get("y", 0)}
-    layout_path.write_text(
-        json.dumps(layout, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-
 # ---------------------------------------------------------------------------
 # POST /api/blueprint/generate-config — clean HCL for an adopted resource
 # ---------------------------------------------------------------------------
@@ -660,35 +552,6 @@ def generate_config(
 
 
 # ---------------------------------------------------------------------------
-# PATCH /api/blueprint/layout — drag-to-save canvas positions
-# ---------------------------------------------------------------------------
-
-
-class LayoutPatchRequest(BaseModel):
-    """Bulk update for `_layout.json`. The canvas calls this after the
-    user drags nodes; debounced client-side so a single drag interaction
-    produces one request, not one per pixel.
-
-    Keys in `positions` are `<type>.<name>` (matching the canvas's
-    node addresses). The endpoint is permissive about which resources
-    exist — entries for resources whose `.tf` files have since been
-    deleted are still persisted (harmless; the GET endpoint ignores
-    them when it doesn't find a matching file).
-    """
-
-    positions: dict[str, dict[str, float]] = Field(default_factory=dict)
-
-
-@router.patch("/blueprint/layout")
-def patch_layout(req: LayoutPatchRequest) -> dict[str, Any]:
-    if not req.positions:
-        return {"updated": 0}
-    settings = get_settings()
-    _merge_layout(settings.blueprint_root, req.positions)
-    return {"updated": len(req.positions)}
-
-
-# ---------------------------------------------------------------------------
 # GET /api/blueprint/resources — read the canvas state back from disk
 # ---------------------------------------------------------------------------
 
@@ -734,51 +597,6 @@ def list_resources(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
         "resources": resources,
         "edges": [],
     }
-
-
-def _split_filename(stem: str) -> tuple[str, str]:
-    """Split a `bp.<type>.<name>` file stem (no `.tf`) into the
-    `(type, name)` pair the canvas uses. Used by the parse-error
-    fallback so a malformed file still renders as a node the user can
-    Delete.
-
-    Tolerates a missing `bp.` prefix (older files, hand-created) by
-    stripping it only when present. Returns `("unknown", stem)` if the
-    remainder doesn't match the convention; both halves still pass the
-    relaxed identifier checks used by the DELETE endpoint, so the
-    broken-file flow keeps working."""
-    s = stem
-    if s.startswith("bp."):
-        s = s[len("bp.") :]
-    if "." in s:
-        type_, _, name = s.partition(".")
-        if _DELETE_TYPE_RE.match(type_) and _NAME_RE.match(name):
-            return type_, name
-    return "unknown", s
-
-
-def _migrate_legacy_resources(blueprint_root: Path) -> int:
-    """One-time migration: move `resources/<type>.<name>.tf` files
-    (the old, broken layout) to `bp.<type>.<name>.tf` at the workspace
-    root. The old layout placed files in a subdirectory, which
-    OpenTofu's root-module loader silently ignored — so `tofu plan`
-    saw zero resources. Idempotent: skips files that already exist at
-    the destination, and removes the `resources/` dir once emptied.
-    Returns the count moved."""
-    legacy_dir = blueprint_root / "resources"
-    if not legacy_dir.is_dir():
-        return 0
-    moved = 0
-    for old_path in legacy_dir.glob("*.tf"):
-        new_path = blueprint_root / f"bp.{old_path.name}"
-        if not new_path.exists():
-            old_path.rename(new_path)
-            moved += 1
-    try:
-        legacy_dir.rmdir()  # only succeeds if empty
-    except OSError:
-        pass
-    return moved
 
 
 def _parse_resource_file(path: Path) -> dict[str, Any] | None:
@@ -948,6 +766,7 @@ class DraftRequest(BaseModel):
     source_address: str | None = None
     import_id: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    blocks: dict[str, list[BlockInstance]] = Field(default_factory=dict)
 
     @field_validator("type")
     @classmethod
@@ -997,7 +816,7 @@ def write_draft(
     else:
         read_only = _read_only_attr_names(req.type)
         authored = {k: v for k, v in req.attributes.items() if k not in read_only}
-        resource_hcl = _render_resource_block(req.type, req.name, authored, {})
+        resource_hcl = _render_resource_block(req.type, req.name, authored, req.blocks)
         if req.kind == "adopt" and req.import_id:
             hcl = (
                 _render_import_block(req.type, req.name, req.import_id)
@@ -1076,67 +895,3 @@ def list_drafts(owner: str = Depends(resolve_owner)) -> dict[str, Any]:
     items = [{"address": address, **entry} for address, entry in data.items()]
     items.sort(key=lambda d: (str(d.get("component") or "~"), d["address"]))
     return {"owner": owner, "drafts": items}
-
-
-# ---------------------------------------------------------------------------
-# DELETE /api/blueprint/resource/{type}/{name}
-# ---------------------------------------------------------------------------
-
-
-@router.delete("/blueprint/resource/{type_}/{name}")
-def delete_resource(type_: str, name: str) -> dict[str, Any]:
-    """Remove a resource from the canvas: deletes its `.tf` file and
-    drops the matching `_layout.json` entry. Idempotent on missing
-    files so a double-click in the UI doesn't 404.
-
-    The type check here is *format-only* — any valid HCL resource type
-    identifier is accepted, not just `SUPPORTED_TYPES`. The supported-
-    types list gates *writes*; deletion needs to work for anything the
-    user has on disk, including resources written by the AI agent
-    through its `Edit`/`Write` tools (Phase 4 hookup) and orphaned
-    files left by failed parses.
-    """
-    if not _DELETE_TYPE_RE.match(type_):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid resource type identifier {type_!r}.",
-        )
-    if not _NAME_RE.match(name):
-        raise HTTPException(
-            status_code=400, detail=f"Invalid resource name {name!r}."
-        )
-
-    settings = get_settings()
-    file_path = settings.blueprint_root / f"bp.{type_}.{name}.tf"
-    # Fall back to the legacy path so a delete still works if the
-    # migration hasn't run for some reason.
-    legacy_path = settings.blueprint_root / "resources" / f"{type_}.{name}.tf"
-    layout_path = settings.blueprint_root / "_layout.json"
-
-    deleted_file = False
-    for candidate in (file_path, legacy_path):
-        if candidate.exists():
-            candidate.unlink()
-            deleted_file = True
-
-    deleted_layout = False
-    if layout_path.exists():
-        try:
-            layout = json.loads(layout_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            layout = {}
-        address = f"{type_}.{name}"
-        if address in layout:
-            del layout[address]
-            layout_path.write_text(
-                json.dumps(layout, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            deleted_layout = True
-
-    return {
-        "type": type_,
-        "name": name,
-        "deleted_file": deleted_file,
-        "deleted_layout_entry": deleted_layout,
-    }

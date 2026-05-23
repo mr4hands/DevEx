@@ -11,8 +11,9 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from .. import leaves
 from ..settings import get_settings
 from ..tofu import (
     TofuError,
@@ -21,6 +22,7 @@ from ..tofu import (
     resources_from_state,
     show_state,
 )
+from ._deps import resolve_owner
 
 router = APIRouter()
 
@@ -70,6 +72,14 @@ def plan_diff_route(
             " HCL without leaving the UI."
         ),
     ),
+    leaf: str | None = Query(
+        default=None,
+        description=(
+            "Owner-scoped overlay leaf to plan, relative to the owner's drafts dir. "
+            "Only valid when root='blueprint'. Format: account/region/layer/component."
+        ),
+    ),
+    owner: str = Depends(resolve_owner),
 ) -> dict[str, Any]:
     """Run `tofu plan` and return the planned changes.
 
@@ -77,7 +87,26 @@ def plan_diff_route(
     """
     settings = get_settings()
     if root == "blueprint":
-        target_root = settings.blueprint_root
+        if leaf is not None:
+            parts = leaf.split("/")
+            if len(parts) != 4:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"leaf must be account/region/layer/component (4 parts); got {leaf!r}",
+                )
+            try:
+                target_root = leaves.leaf_dir(
+                    settings.blueprint_root, owner, *parts
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if not target_root.is_dir():
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Leaf {leaf!r} does not exist for owner {owner!r}.",
+                )
+        else:
+            target_root = settings.blueprint_root
     elif root == "default":
         target_root = settings.tofu_root
     else:

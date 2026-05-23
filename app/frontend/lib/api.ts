@@ -6,11 +6,18 @@ import type {
   ExistingResourcesResponse,
   Hierarchy,
   InventoryResponse,
+  LeafCoords,
   PlanDiffResponse,
   PlanResponse,
+  PromoteResponse,
   SchemasResponse,
   StreamEvent,
 } from "./types";
+
+/** Mirrors the backend `_COORD_RE` in leaves.py. Each leaf coord segment
+ *  must satisfy this before we send a draft, so the user gets an inline
+ *  error instead of a 400. */
+export const COORD_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export async function fetchPlan(): Promise<PlanResponse> {
   const res = await fetch("/api/plan", { cache: "no-store" });
@@ -26,8 +33,10 @@ export type PlanRoot = "default" | "blueprint";
 export async function fetchPlanDiff(
   signal?: AbortSignal,
   root: PlanRoot = "default",
+  leaf?: string,
 ): Promise<PlanDiffResponse> {
-  const qs = `?root=${encodeURIComponent(root)}`;
+  let qs = `?root=${encodeURIComponent(root)}`;
+  if (leaf) qs += `&leaf=${encodeURIComponent(leaf)}`;
   const res = await fetch(`/api/plan-diff${qs}`, { cache: "no-store", signal });
   if (!res.ok) {
     const text = await res.text();
@@ -67,82 +76,6 @@ export async function fetchBlueprintResources(
   return res.json();
 }
 
-/** Persists a batch of canvas node positions to `_layout.json`. Used
- *  by the drag-to-save flow — debounced client-side so a single drag
- *  produces one request, not one per pixel. Keys are `<type>.<name>`. */
-export async function patchBlueprintLayout(
-  positions: Record<string, { x: number; y: number }>,
-  signal?: AbortSignal,
-): Promise<{ updated: number }> {
-  const res = await fetch("/api/blueprint/layout", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ positions }),
-    signal,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `/api/blueprint/layout failed (${res.status}): ${text}`,
-    );
-  }
-  return res.json();
-}
-
-/** Deletes a resource's .tf file + its layout entry. Idempotent. */
-export async function deleteBlueprintResource(
-  type: string,
-  name: string,
-  signal?: AbortSignal,
-): Promise<{
-  type: string;
-  name: string;
-  deleted_file: boolean;
-  deleted_layout_entry: boolean;
-}> {
-  const res = await fetch(
-    `/api/blueprint/resource/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
-    { method: "DELETE", signal },
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(
-      `/api/blueprint/resource DELETE failed (${res.status}): ${text}`,
-    );
-  }
-  return res.json();
-}
-
-/** Saves a resource to the Blueprint workspace as its own .tf file. */
-export async function writeBlueprintResource(
-  body: {
-    type: string;
-    name: string;
-    import_id?: string | null;
-    attributes: Record<string, unknown>;
-    blocks?: Record<
-      string,
-      Array<{
-        attributes: Record<string, unknown>;
-        blocks: Record<string, unknown>;
-      }>
-    >;
-    position?: { x: number; y: number } | null;
-  },
-  signal?: AbortSignal,
-): Promise<{ type: string; name: string; path: string; hcl: string }> {
-  const res = await fetch("/api/blueprint/resource", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`/api/blueprint/resource failed (${res.status}): ${text}`);
-  }
-  return res.json();
-}
 
 /** Unified resource inventory (managed + unmanaged), classified by
  *  account/region/component. The tree groups this client-side. */
@@ -260,19 +193,43 @@ export async function fetchDrafts(
   return res.json();
 }
 
-/** Discard a draft. */
+/** Discard a draft. The backend needs the leaf coords to find the file. */
 export async function discardDraft(
   type: string,
   name: string,
+  coords: LeafCoords,
   signal?: AbortSignal,
 ): Promise<{ discarded: boolean }> {
   const res = await fetch(
     `/api/blueprint/draft/${encodeURIComponent(type)}/${encodeURIComponent(name)}`,
-    { method: "DELETE", signal },
+    {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(coords),
+      signal,
+    },
   );
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`discard draft failed (${res.status}): ${text}`);
+  }
+  return res.json();
+}
+
+/** Deterministically promote the owner's overlay into devex-live and open a
+ *  PR. No agent. Returns the PR URL. */
+export async function promoteDrafts(
+  signal?: AbortSignal,
+): Promise<PromoteResponse> {
+  const res = await fetch("/api/blueprint/promote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`/api/blueprint/promote failed (${res.status}): ${text}`);
   }
   return res.json();
 }

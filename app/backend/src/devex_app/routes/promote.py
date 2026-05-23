@@ -4,6 +4,7 @@ off main, and open a PR. No agent."""
 from __future__ import annotations
 
 import datetime as _dt
+import shutil
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -33,20 +34,32 @@ def promote(req: PromoteRequest, owner: str = Depends(resolve_owner)) -> dict[st
     stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d-%H%M%S")
     branch = f"devex/{owner}-{stamp}"
     devex_rel = settings.devex_live_root.relative_to(settings.repo_root).as_posix()
-    pr_url = vcs.promote_branch(
-        repo_root=str(settings.repo_root),
-        branch=branch,
-        paths=[f"{devex_rel}/{r}" for r in rendered],
-        commit_message=(
-            f"feat(devex-live): promote {owner}'s drafts "
-            f"({len(rendered)} leaf/leaves)"
-        ),
-        pr_title=f"devex-live: {owner} promote ({len(rendered)} leaf/leaves)",
-        pr_body=(
-            "Promoted from the DevEx platform overlay.\n\n"
-            + "\n".join(f"- {r}" for r in rendered)
-        ),
-    )
+    try:
+        pr_url = vcs.promote_branch(
+            repo_root=str(settings.repo_root),
+            branch=branch,
+            paths=[f"{devex_rel}/{r}" for r in rendered],
+            commit_message=(
+                f"feat(devex-live): promote {owner}'s drafts "
+                f"({len(rendered)} leaf/leaves)"
+            ),
+            pr_title=f"devex-live: {owner} promote ({len(rendered)} leaf/leaves)",
+            pr_body=(
+                "Promoted from the DevEx platform overlay.\n\n"
+                + "\n".join(f"- {r}" for r in rendered)
+            ),
+        )
+    except vcs.PromoteError as exc:
+        # vcs already restored the original branch + dropped the temp branch.
+        # Remove the rendered leaves so devex-live isn't polluted and a retry
+        # starts clean. Drafts are left intact (only cleared on success below).
+        for rel in rendered:
+            shutil.rmtree(settings.devex_live_root / rel, ignore_errors=True)
+        tail = exc.output[-4000:]
+        raise HTTPException(
+            status_code=422,
+            detail=f"Promote aborted; repo restored. {exc}\n{tail}".strip(),
+        ) from exc
 
     # Clear promoted drafts + overlay leaves.
     data = drafts.load_drafts(settings.blueprint_root, owner)

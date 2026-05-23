@@ -4,25 +4,23 @@ import { useState } from "react";
 
 import { writeDraft } from "@/lib/api";
 import { PALETTE } from "@/lib/blueprintPalette";
+import type { LeafCoords } from "@/lib/types";
 
 const _NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /**
- * Fast "add a resource to a component" form. Picks a type + name and
- * writes a `new` draft tagged with the component; the resource then shows
- * under that component (draft) and can be filled in via the inspector.
- * Also offers an "ask the agent instead" escape hatch.
+ * Fast "add a resource to a leaf" form. Picks a type + name and writes a
+ * `new` draft tagged with the full leaf coords; the resource then shows
+ * under that leaf (draft) and can be filled in via the inspector.
  */
 export function QuickCreate({
-  component,
+  coords,
   onCreated,
   onCancel,
-  onAskAgent,
 }: {
-  component: string;
+  coords: LeafCoords;
   onCreated: (created: { type: string; name: string; component: string }) => void;
   onCancel: () => void;
-  onAskAgent: (component: string) => void;
 }) {
   const [type, setType] = useState(PALETTE[0]?.type ?? "aws_s3_bucket");
   const [name, setName] = useState("");
@@ -36,8 +34,8 @@ export function QuickCreate({
     setBusy(true);
     setErr(null);
     try {
-      await writeDraft({ kind: "new", type, name, component });
-      onCreated({ type, name, component });
+      await writeDraft({ kind: "new", type, name, ...coords });
+      onCreated({ type, name, component: coords.component });
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -50,10 +48,10 @@ export function QuickCreate({
       <div className="shrink-0 border-b border-border px-3 pt-3 pb-2 flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
-            Add to component
+            Add to leaf
           </div>
-          <div className="font-mono text-sm text-foreground break-all">
-            {component}
+          <div className="font-mono text-xs text-foreground break-all">
+            {coords.account}/{coords.region}/{coords.layer}/{coords.component}
           </div>
         </div>
         <button
@@ -104,9 +102,9 @@ export function QuickCreate({
           )}
         </div>
         <p className="text-[10px] text-muted-foreground">
-          Creates a draft tagged <span className="font-mono">Component=
-          {component}</span>. Fill in its attributes in the inspector, then
-          commit to a PR.
+          Creates a draft in{" "}
+          <span className="font-mono">{coords.layer}/{coords.component}</span>.
+          Fill in its attributes in the inspector, then promote to a PR.
         </p>
         {err && (
           <p className="text-[10px] text-red-600 dark:text-red-400 break-words">
@@ -123,13 +121,6 @@ export function QuickCreate({
           className="w-full inline-flex items-center justify-center h-8 px-3 bg-accent hover:opacity-90 text-white text-xs font-medium rounded-sm transition-colors disabled:opacity-50"
         >
           {busy ? "Creating…" : "Create draft"}
-        </button>
-        <button
-          type="button"
-          onClick={() => onAskAgent(component)}
-          className="w-full inline-flex items-center justify-center h-7 px-3 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted rounded-sm transition-colors"
-        >
-          or ask the agent instead →
         </button>
       </div>
     </div>

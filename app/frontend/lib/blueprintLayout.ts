@@ -6,13 +6,11 @@
  * instance → subnet, etc.) which form a DAG most of the time. Dagre's
  * ranked-layered layout maps that cleanly onto a left-to-right flow.
  * For ~50 nodes we'd run it in <50ms, which is fine for an on-demand
- * "Layout" button plus an auto-trigger after reloads.
+ * "Layout" button plus the canvas's auto-layout on every reload.
  *
- * We don't use Dagre's positioning for ALL reloads — the user
- * positions nodes by drag, and those get persisted via the layout
- * sidecar. Auto-layout only fires when the canvas detects new
- * arrivals stuck at the origin (typical of AI-written resources that
- * don't include a position in their POST).
+ * The overlay model has no position sidecar — `/api/blueprint/resources`
+ * returns no coordinates — so the canvas re-runs this on each load to keep
+ * the graph readable rather than piling server nodes at the origin.
  */
 
 import dagre from "dagre";
@@ -63,22 +61,4 @@ export function autoLayoutNodes<TData extends Record<string, unknown>>(
       },
     };
   });
-}
-
-/** Detects "fresh AI-arrival" patterns: every node still parked at
- *  (0, 0). If the agent wrote multiple resources in one turn without
- *  positions, they pile up at the origin; auto-layout makes them
- *  readable. We don't trigger when even one node has a non-origin
- *  position — that's a sign the user has been arranging by hand.
- */
-export function shouldAutoLayout<TData extends Record<string, unknown>>(
-  nodeIds: string[],
-  nodes: Node<TData>[],
-): boolean {
-  if (nodeIds.length === 0) return false;
-  const matchingNew = nodes.filter((n) => nodeIds.includes(n.id));
-  if (matchingNew.length === 0) return false;
-  return matchingNew.every(
-    (n) => n.position.x === 0 && n.position.y === 0,
-  );
 }

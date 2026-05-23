@@ -8,6 +8,16 @@ export type Resource = {
   values: Record<string, unknown>;
 };
 
+/** The four-level path that identifies a devex-live leaf. Every authoring
+ *  action targets one leaf. Each coord must match the backend's rule:
+ *  lowercase letters/digits/hyphen, 1-64 chars (see COORD_RE in lib/api.ts). */
+export type LeafCoords = {
+  account: string;
+  region: string;
+  layer: string;
+  component: string;
+};
+
 export type ResourceGroup = {
   type: string;
   resources: Resource[];
@@ -129,7 +139,10 @@ export type BlueprintResource = {
    *  resource was successfully parsed. Always present in the response
    *  shape post-Phase 4 — `{}` when the resource has no blocks. */
   blocks: Record<string, BlueprintBlockInstance[]>;
-  position: { x: number; y: number };
+  /** account/region/layer/component relpath of the overlay leaf this
+   *  resource lives in. */
+  leaf?: string;
+  position?: { x: number; y: number };
   filename: string;
   parse_error?: string;
 };
@@ -179,6 +192,7 @@ export type InventoryResource = {
   arn: string | null;
   account: string;
   region: string;
+  layer: string;
   managed: boolean;
   /** "managed" (in tofu state) | "unmanaged" (in AWS, adoptable) |
    *  "planned" (authored in the blueprint sandbox, not yet applied). */
@@ -195,24 +209,38 @@ export type DraftRequest = {
   kind: "new" | "adopt" | "edit" | "delete";
   type: string;
   name: string;
-  component?: string | null;
+  account: string;
+  region: string;
+  layer: string;
+  component: string;
   source_address?: string | null;
   import_id?: string | null;
   attributes?: Record<string, unknown>;
+  blocks?: Record<string, BlueprintBlockInstance[]>;
 };
 
 export type Draft = {
   address: string;
   kind: "new" | "adopt" | "edit" | "delete";
   owner?: string;
+  leaf?: string;
+  account?: string;
+  region?: string;
+  layer?: string;
   component?: string | null;
   source_address?: string | null;
-  target_module?: string | null;
 };
 
 export type DraftsResponse = {
   owner: string;
   drafts: Draft[];
+};
+
+export type PromoteResponse = {
+  owner: string;
+  leaves: string[];
+  pr_url: string;
+  branch: string;
 };
 
 export type InventoryResponse = {

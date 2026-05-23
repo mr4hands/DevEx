@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { fetchInventory } from "@/lib/api";
+import { COORD_RE, fetchInventory } from "@/lib/api";
 import { EXISTING_DRAG_TYPE } from "@/lib/blueprintPalette";
 import { FAMILY_CLASSES, familyOf } from "@/lib/resourceFamilies";
-import type { InventoryResource, Resource } from "@/lib/types";
+import type { InventoryResource, LeafCoords, Resource } from "@/lib/types";
 
-/** Builds the nested Account -> Region -> Component -> type -> resource
+/** Builds the nested Account -> Region -> Layer -> Component -> type -> resource
  *  structure from the flat inventory. Unassigned sorts last. */
 type TypeGroup = { type: string; resources: InventoryResource[] };
 type ComponentGroup = { component: string; types: TypeGroup[] };
-type RegionGroup = { region: string; components: ComponentGroup[] };
+type LayerGroup = { layer: string; components: ComponentGroup[] };
+type RegionGroup = { region: string; layers: LayerGroup[] };
 type AccountGroup = { account: string; regions: RegionGroup[] };
 
 function groupBy<T>(arr: T[], key: (t: T) => string): Map<string, T[]> {
@@ -25,8 +26,9 @@ function groupBy<T>(arr: T[], key: (t: T) => string): Map<string, T[]> {
 }
 
 function sortKeys(keys: string[]): string[] {
+  const isUnassigned = (k: string) => k.toLowerCase() === "unassigned";
   return keys.sort((a, b) =>
-    a === "Unassigned" ? 1 : b === "Unassigned" ? -1 : a.localeCompare(b),
+    isUnassigned(a) ? 1 : isUnassigned(b) ? -1 : a.localeCompare(b),
   );
 }
 
@@ -37,21 +39,45 @@ function groupInventory(items: InventoryResource[]): AccountGroup[] {
     const regions: RegionGroup[] = [];
     const byRegion = groupBy(byAccount.get(account)!, (r) => r.region);
     for (const region of sortKeys([...byRegion.keys()])) {
-      const components: ComponentGroup[] = [];
-      const byComp = groupBy(byRegion.get(region)!, (r) => r.component);
-      for (const component of sortKeys([...byComp.keys()])) {
-        const types: TypeGroup[] = [];
-        const byType = groupBy(byComp.get(component)!, (r) => r.type);
-        for (const type of [...byType.keys()].sort()) {
-          types.push({ type, resources: byType.get(type)! });
+      const layers: LayerGroup[] = [];
+      const byLayer = groupBy(byRegion.get(region)!, (r) => r.layer || "unassigned");
+      for (const layer of sortKeys([...byLayer.keys()])) {
+        const components: ComponentGroup[] = [];
+        const byComp = groupBy(byLayer.get(layer)!, (r) => r.component);
+        for (const component of sortKeys([...byComp.keys()])) {
+          const types: TypeGroup[] = [];
+          const byType = groupBy(byComp.get(component)!, (r) => r.type);
+          for (const type of [...byType.keys()].sort()) {
+            types.push({ type, resources: byType.get(type)! });
+          }
+          components.push({ component, types });
         }
-        components.push({ component, types });
+        layers.push({ layer, components });
       }
-      regions.push({ region, components });
+      regions.push({ region, layers });
     }
     accounts.push({ account, regions });
   }
   return accounts;
+}
+
+/** A leaf is authorable only when all four coords are valid (real managed/unmanaged
+ *  buckets sit under `unassigned` layer / `Unassigned` component and fail this —
+ *  their "+add" is hidden). */
+function authorableLeaf(
+  account: string,
+  region: string,
+  layer: string,
+  component: string,
+): LeafCoords | null {
+  const coords = { account, region, layer, component };
+  // The unassigned buckets (managed/unmanaged rows with no leaf path) are not
+  // authorable. They fail COORD_RE today via the "Unassigned" component, but
+  // guard on casing too so a lowercase backend value can't slip an "+add" in.
+  if (layer.toLowerCase() === "unassigned" || component.toLowerCase() === "unassigned") {
+    return null;
+  }
+  return Object.values(coords).every((c) => COORD_RE.test(c)) ? coords : null;
 }
 
 /** Map an inventory item to the Resource shape the drawer/chat expect. */
@@ -70,7 +96,9 @@ export function inventoryToResource(r: InventoryResource): Resource {
 export function ResourceTree({
   selected,
   onSelect,
-  onAddToComponent,
+  onSelectLeaf,
+  onAddToLeaf,
+  onNewLeaf,
   onDiscover,
   refreshKey,
 }: {
@@ -78,9 +106,12 @@ export function ResourceTree({
   /** Fires with the full inventory item so the inspector can act on its
    *  state/draft/component. */
   onSelect: (item: InventoryResource) => void;
-  /** Fired by a component node's "+add" button — the parent seeds an agent
-   *  prompt to add resources to that component. */
-  onAddToComponent?: (component: string) => void;
+  /** Fired when a leaf (component) node is opened — sets the authoring target. */
+  onSelectLeaf?: (coords: LeafCoords) => void;
+  /** Fired by a leaf node's "+add" — opens QuickCreate for these coords. */
+  onAddToLeaf?: (coords: LeafCoords) => void;
+  /** Fired by the "+ new leaf" header button. */
+  onNewLeaf?: () => void;
   /** Fired by the "discover" button — the parent seeds an agent run that
    *  enumerates AWS and writes the discovery manifest. */
   onDiscover?: (scope: string) => void;
@@ -128,6 +159,16 @@ export function ResourceTree({
           {loading ? "…" : `${items.length} resources`}
         </span>
         <div className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+          {onNewLeaf && (
+            <button
+              type="button"
+              className="px-1.5 h-5 rounded-sm hover:bg-muted text-emerald-700 dark:text-emerald-400"
+              title="Create a new leaf (account/region/layer/component) to author into"
+              onClick={onNewLeaf}
+            >
+              ＋ leaf
+            </button>
+          )}
           {onDiscover && (
             <button
               type="button"
@@ -173,49 +214,70 @@ export function ResourceTree({
                 collapsed={collapsed}
                 onToggle={toggle}
               >
-                {reg.components.map((comp) => (
+                {reg.layers.map((lay) => (
                   <TreeBranch
-                    key={comp.component}
-                    id={`${acct.account}/${reg.region}/c:${comp.component}`}
-                    label={comp.component}
-                    kind="component"
+                    key={lay.layer}
+                    id={`${acct.account}/${reg.region}/l:${lay.layer}`}
+                    label={lay.layer}
+                    kind="layer"
                     collapsed={collapsed}
                     onToggle={toggle}
-                    action={
-                      onAddToComponent && comp.component !== "Unassigned" ? (
-                        <button
-                          type="button"
-                          title={`Ask the agent to add resources to ${comp.component}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onAddToComponent(comp.component);
-                          }}
-                          className="shrink-0 px-1.5 h-5 text-[11px] font-mono text-emerald-700 dark:text-emerald-400 hover:bg-muted rounded-sm"
-                        >
-                          ＋
-                        </button>
-                      ) : null
-                    }
                   >
-                    {comp.types.map((tg) => (
-                      <TreeBranch
-                        key={tg.type}
-                        id={`${acct.account}/${reg.region}/${comp.component}/t:${tg.type}`}
-                        label={`${tg.type} (${tg.resources.length})`}
-                        kind="type"
-                        collapsed={collapsed}
-                        onToggle={toggle}
-                      >
-                        {tg.resources.map((r) => (
-                          <ResourceRow
-                            key={r.address}
-                            item={r}
-                            selected={selected?.address === r.address}
-                            onSelect={() => onSelect(r)}
-                          />
-                        ))}
-                      </TreeBranch>
-                    ))}
+                    {lay.components.map((comp) => {
+                      const coords = authorableLeaf(
+                        acct.account, reg.region, lay.layer, comp.component,
+                      );
+                      return (
+                        <TreeBranch
+                          key={comp.component}
+                          id={`${acct.account}/${reg.region}/${lay.layer}/c:${comp.component}`}
+                          label={comp.component}
+                          kind="component"
+                          collapsed={collapsed}
+                          onToggle={toggle}
+                          onOpen={
+                            coords && onSelectLeaf
+                              ? () => onSelectLeaf(coords)
+                              : undefined
+                          }
+                          action={
+                            coords && onAddToLeaf ? (
+                              <button
+                                type="button"
+                                title={`Add a resource to ${comp.component}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onAddToLeaf(coords);
+                                }}
+                                className="shrink-0 px-1.5 h-5 text-[11px] font-mono text-emerald-700 dark:text-emerald-400 hover:bg-muted rounded-sm"
+                              >
+                                ＋
+                              </button>
+                            ) : null
+                          }
+                        >
+                          {comp.types.map((tg) => (
+                            <TreeBranch
+                              key={tg.type}
+                              id={`${acct.account}/${reg.region}/${lay.layer}/${comp.component}/t:${tg.type}`}
+                              label={`${tg.type} (${tg.resources.length})`}
+                              kind="type"
+                              collapsed={collapsed}
+                              onToggle={toggle}
+                            >
+                              {tg.resources.map((r) => (
+                                <ResourceRow
+                                  key={r.address}
+                                  item={r}
+                                  selected={selected?.address === r.address}
+                                  onSelect={() => onSelect(r)}
+                                />
+                              ))}
+                            </TreeBranch>
+                          ))}
+                        </TreeBranch>
+                      );
+                    })}
                   </TreeBranch>
                 ))}
               </TreeBranch>
@@ -233,25 +295,32 @@ function TreeBranch({
   kind,
   collapsed,
   onToggle,
+  onOpen,
   action,
   children,
 }: {
   id: string;
   label: string;
-  kind: "account" | "region" | "component" | "type";
+  kind: "account" | "region" | "layer" | "component" | "type";
   collapsed: Set<string>;
   onToggle: (id: string) => void;
+  /** Called when this branch is opened (expanded). Used by leaf nodes to
+   *  set the active authoring leaf. */
+  onOpen?: () => void;
   action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const isCollapsed = collapsed.has(id);
-  const indent = { account: 0, region: 12, component: 24, type: 36 }[kind];
+  const indent = { account: 0, region: 12, layer: 24, component: 36, type: 48 }[kind];
   return (
     <div>
       <div className="w-full flex items-center pr-2 border-b border-border hover:bg-muted">
         <button
           type="button"
-          onClick={() => onToggle(id)}
+          onClick={() => {
+            if (isCollapsed && onOpen) onOpen();
+            onToggle(id);
+          }}
           style={{ paddingLeft: indent + 8 }}
           className="flex-1 min-w-0 flex items-center gap-1.5 h-6 text-left font-mono"
         >
@@ -306,7 +375,7 @@ function ResourceRow({
           ? `Drag onto the canvas to adopt ${item.address}`
           : item.address
       }
-      style={{ paddingLeft: 56 }}
+      style={{ paddingLeft: 68 }}
       className={`w-full flex items-center gap-2 h-6 pr-2 text-left border-b border-border font-mono ${
         selected ? "bg-amber-50/60 dark:bg-amber-950/30" : "hover:bg-muted"
       } ${adoptable ? "cursor-grab active:cursor-grabbing" : ""}`}
