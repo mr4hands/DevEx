@@ -12,51 +12,24 @@ import { ResourceDrawer } from "@/components/ResourceDrawer";
 import { ResourceInspector } from "@/components/ResourceInspector";
 import { ResourceTree, inventoryToResource } from "@/components/ResourceTree";
 import {
-  deleteBlueprintResource,
+  discardDraft,
   fetchPlanDiff,
+  promoteDrafts,
   setComponentOverride,
   type PlanRoot,
 } from "@/lib/api";
 import type {
   InventoryResource,
+  LeafCoords,
   PlanDiffResponse,
   Resource,
   ResourceChange,
 } from "@/lib/types";
+import { LeafForm } from "@/components/LeafForm";
 
 // The work surface (center) toggles between the blueprint canvas and the
 // plan-diff. The resource tree is now a persistent navigator, not a tab.
 type WorkTab = "canvas" | "plan";
-
-// Prompt seeded into the chat by the Blueprint "commit to PR" button.
-// The agent has the repo + Bash + the opentofu-* skills, so it can do
-// the cleanup + git + PR itself. Kept terse but explicit about the
-// non-negotiables: promote to a module, don't commit the bp.* sandbox
-// files, don't apply, report the PR URL.
-const BLUEPRINT_COMMIT_PROMPT = `Promote the current blueprint into a reviewable PR.
-
-The Blueprint canvas authored resources as sandbox files at the root of
-\`live/blueprint/\`, named \`bp.<type>.<name>.tf\`. Please:
-
-1. Read every \`live/blueprint/bp.*.tf\` to understand the resources and
-   their relationships (references between them are dependency edges).
-2. Group the resources by their \`Component\` tag and extract each group
-   into its own clean, reusable module under \`modules/<component>/\`
-   (resources with no Component tag go in a sensibly-named module),
-   following the opentofu-style-guide skill: proper file layout
-   (versions.tf / variables.tf / main.tf / outputs.tf), typed +
-   described variables for anything that should be caller-configurable,
-   described outputs, and a day-one \`tests/plan.tftest.hcl\` per module.
-3. Wire the module into an appropriate live root config with sensible
-   inputs.
-4. Run \`tofu fmt\` and \`tofu validate\` until clean.
-5. Create a branch **off the latest \`main\`** (fetch first; never branch
-   off another feature branch), commit (do NOT commit the \`bp.*.tf\`
-   sandbox files or \`_layout.json\`), push, and open a PR against \`main\`
-   with \`gh pr create --base main --fill\`.
-6. Report the PR URL back here.
-
-Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
 
 // Seeded into the chat by the Existing-resources tree's "discover" button.
 // The agent has the read-only AWS MCP + the aws-resource-discovery skill,
@@ -75,68 +48,12 @@ documents (groups of { address, type, name, import_id, summary_attributes }).
 Do not modify any other files. Report how many resources you found.`;
 }
 
-// Seeded by a component node's "+add" button. The agent authors new
-// resources into the blueprint sandbox, tagged with the component so they
-// classify under it in the tree.
-function addToComponentPrompt(component: string): string {
-  return `Add resources to the "${component}" component.
-
-Author the new resource(s) into the blueprint sandbox at the root of
-\`live/blueprint/\` as \`bp.<type>.<name>.tf\` files, following the repo
-conventions. Tag every resource you add with \`Component = "${component}"\`
-(merge into its \`tags\`) so it classifies under ${component} in the tree.
-If it's unclear what to add, ask me first. Do not run \`tofu apply\`.`;
+// "a/r/l/c" -> LeafCoords. Returns null if the relpath isn't 4 segments.
+function leafToCoords(leaf: string): LeafCoords | null {
+  const [account, region, layer, component] = leaf.split("/");
+  if (!account || !region || !layer || !component) return null;
+  return { account, region, layer, component };
 }
-
-// Seeded by the pending-changes "commit to PR" button. The agent reads the
-// owner's draft set and promotes each change into the right module per
-// component, opening a PR. Apply stays manual.
-function commitDraftsPrompt(): string {
-  return `Promote my pending blueprint drafts into a reviewable PR.
-
-My drafts live under \`live/blueprint/drafts/<owner>/\` — read its
-\`_drafts.json\` (and the matching \`bp.<type>.<name>.tf\` files) for the
-change set. Apply each draft by kind:
-- "new": add the resource to its component's module (\`target_module\`),
-  creating the module if needed, per the opentofu-style-guide skill.
-- "edit": modify the existing resource (\`source_address\`) in its real module.
-- "adopt": bring it under management via an \`import { }\` block.
-- "delete": remove the resource from its module (a destroy).
-
-Group by component, run \`tofu fmt\` + \`tofu validate\`, create a branch
-**off the latest \`main\`** (fetch first; never branch off another feature
-branch), commit (do NOT commit the \`drafts/\` sandbox), push, open a PR
-against \`main\` with \`gh pr create --base main --fill\`, and report the
-URL. Do not run \`tofu apply\`.`;
-}
-
-// Prompt seeded into the chat by the Blueprint "commit to PR" button.
-// The agent has the repo + Bash + the opentofu-* skills, so it can do
-// the cleanup + git + PR itself. Kept terse but explicit about the
-// non-negotiables: promote to a module, don't commit the bp.* sandbox
-// files, don't apply, report the PR URL.
-const BLUEPRINT_COMMIT_PROMPT = `Promote the current blueprint into a reviewable PR.
-
-The Blueprint canvas authored resources as sandbox files at the root of
-\`live/blueprint/\`, named \`bp.<type>.<name>.tf\`. Please:
-
-1. Read every \`live/blueprint/bp.*.tf\` to understand the resources and
-   their relationships (references between them are dependency edges).
-2. Extract them into a clean, reusable module under \`modules/<name>/\`,
-   following the opentofu-style-guide skill: proper file layout
-   (versions.tf / variables.tf / main.tf / outputs.tf), typed +
-   described variables for anything that should be caller-configurable,
-   described outputs, and a day-one \`tests/plan.tftest.hcl\`.
-3. Wire the module into an appropriate live root config with sensible
-   inputs.
-4. Run \`tofu fmt\` and \`tofu validate\` until clean.
-5. Create a branch **off the latest \`main\`** (fetch first; never branch
-   off another feature branch), commit (do NOT commit the \`bp.*.tf\`
-   sandbox files or \`_layout.json\`), push, and open a PR against \`main\`
-   with \`gh pr create --base main --fill\`.
-6. Report the PR URL back here.
-
-Do not run \`tofu apply\`. Leave the blueprint sandbox files in place.`;
 
 export default function Home() {
   const [selected, setSelected] = useState<Resource | null>(null);
@@ -145,8 +62,16 @@ export default function Home() {
   const [selectedItem, setSelectedItem] = useState<InventoryResource | null>(
     null,
   );
-  // When set, region 4 shows the QuickCreate form for this component.
-  const [creating, setCreating] = useState<{ component: string } | null>(null);
+  // The leaf every author surface (canvas drop, adopt, quick-create) targets.
+  const [activeLeaf, setActiveLeaf] = useState<LeafCoords | null>(null);
+  // When set, region 4 shows QuickCreate for these coords.
+  const [creating, setCreating] = useState<LeafCoords | null>(null);
+  // When true, region 4 shows the LeafForm.
+  const [creatingLeaf, setCreatingLeaf] = useState(false);
+  // Last promote result (PR URL) surfaced by the pending bar.
+  const [promoteResult, setPromoteResult] = useState<
+    { url: string } | { error: string } | null
+  >(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [workTab, setWorkTab] = useState<WorkTab>("canvas");
   // The agent column collapses to a thin strip to give the work surface room.
@@ -174,27 +99,32 @@ export default function Home() {
   // as a user message, driving the agent to promote the blueprint.
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
-  // Seed the agent with a promote-to-PR prompt and reveal the chat.
-  const handleCommitToPR = useCallback(() => {
-    setPendingPrompt(BLUEPRINT_COMMIT_PROMPT);
+  const handlePromote = useCallback(async () => {
+    setPromoteResult(null);
+    try {
+      const res = await promoteDrafts();
+      setPromoteResult({ url: res.pr_url });
+      setRefreshKey((k) => k + 1);
+      setBlueprintReload((k) => k + 1);
+    } catch (e) {
+      setPromoteResult({ error: (e as Error).message });
+    }
   }, []);
 
   // Shared "delete a canvas node" handler — the canvas calls it from
   // React Flow's Backspace/Delete gesture; the drawer's Delete button
-  // shares the same logic. Saved nodes hit the backend; un-saved drops
-  // just clear from the canvas state. Promise resolves on success so
-  // React Flow's `onBeforeDelete` can wait before removing the node
-  // from canvas state.
+  // shares the same logic. A canvas node now belongs to a leaf, so
+  // delete = discard the draft.
   const handleBlueprintDelete = useCallback(
     async (node: BlueprintNode) => {
-      const hasFile =
-        node.data.attributes !== undefined ||
-        node.id === `${node.data.resourceType}.${node.data.name}`;
-      if (hasFile) {
-        await deleteBlueprintResource(node.data.resourceType, node.data.name);
+      const coords = node.data.leaf ? leafToCoords(node.data.leaf) : null;
+      // Only saved nodes (server-id format) have a leaf to discard from.
+      if (coords) {
+        await discardDraft(node.data.resourceType, node.data.name, coords);
       }
       setBlueprintNode((prev) => (prev && prev.id === node.id ? null : prev));
       setBlueprintReload((k) => k + 1);
+      setRefreshKey((k) => k + 1);
     },
     [],
   );
@@ -337,7 +267,9 @@ export default function Home() {
       <aside className="w-[260px] shrink-0 border-r border-border flex flex-col min-h-0">
         <PendingChanges
           refreshKey={refreshKey}
-          onCommit={() => setPendingPrompt(commitDraftsPrompt())}
+          onPromote={handlePromote}
+          result={promoteResult}
+          onDismissResult={() => setPromoteResult(null)}
         />
         <ResourceTree
           selected={selected}
@@ -346,8 +278,18 @@ export default function Home() {
             setSelected(inventoryToResource(item));
             setBlueprintNode(null);
             setCreating(null);
+            setCreatingLeaf(false);
           }}
-          onAddToComponent={(c) => setCreating({ component: c })}
+          onSelectLeaf={(coords) => setActiveLeaf(coords)}
+          onAddToLeaf={(coords) => {
+            setActiveLeaf(coords);
+            setCreating(coords);
+            setCreatingLeaf(false);
+          }}
+          onNewLeaf={() => {
+            setCreatingLeaf(true);
+            setCreating(null);
+          }}
           onDiscover={(scope) => setPendingPrompt(discoveryPrompt(scope))}
           refreshKey={refreshKey}
         />
@@ -366,7 +308,8 @@ export default function Home() {
             onCanvasNodeDelete={handleBlueprintDelete}
             panToAddress={blueprintPanTo}
             onPanConsumed={() => setBlueprintPanTo(null)}
-            onCommitToPR={handleCommitToPR}
+            activeLeaf={activeLeaf}
+            onPromote={handlePromote}
             onAdopted={() => {
               setBlueprintReload((k) => k + 1);
               setRefreshKey((k) => k + 1);
@@ -388,28 +331,36 @@ export default function Home() {
 
       {/* Region 4 — Inspector */}
       <aside className="w-[380px] shrink-0 border-l border-border flex flex-col min-h-0">
-        {creating ? (
+        {creatingLeaf ? (
+          <LeafForm
+            onCreate={(coords) => {
+              setActiveLeaf(coords);
+              setCreating(coords);
+              setCreatingLeaf(false);
+            }}
+            onCancel={() => setCreatingLeaf(false)}
+          />
+        ) : creating ? (
           <QuickCreate
-            component={creating.component}
+            coords={creating}
             onCreated={(c) => {
               setCreating(null);
               setRefreshKey((k) => k + 1);
-              // Show the just-created draft in the inspector immediately
-              // (a minimal row; the tree refresh fills in the parsed one).
               const item: InventoryResource = {
                 address: `${c.type}.${c.name}`,
                 type: c.type,
                 name: c.name,
                 id: null,
                 arn: null,
-                account: "unknown",
-                region: "unknown",
+                account: creating.account,
+                region: creating.region,
+                layer: creating.layer,
                 managed: false,
                 state: "planned",
-                component: c.component,
-                component_source: "tag",
+                component: creating.component,
+                component_source: "leaf",
                 draft_kind: "new",
-                tags: { Component: c.component },
+                tags: {},
                 values: {},
               };
               setSelectedItem(item);
@@ -417,14 +368,11 @@ export default function Home() {
               setBlueprintNode(null);
             }}
             onCancel={() => setCreating(null)}
-            onAskAgent={(c) => {
-              setPendingPrompt(addToComponentPrompt(c));
-              setCreating(null);
-            }}
           />
         ) : blueprintNode ? (
           <BlueprintNodeDrawer
             node={blueprintNode}
+            activeLeaf={activeLeaf}
             onClose={() => setBlueprintNode(null)}
             onRename={(nodeId, newName) => {
               setBlueprintRename({ nodeId, newName });
@@ -434,12 +382,16 @@ export default function Home() {
                   : prev,
               );
             }}
-            onResourceWritten={() => setBlueprintReload((k) => k + 1)}
+            onResourceWritten={() => {
+              setBlueprintReload((k) => k + 1);
+              setRefreshKey((k) => k + 1);
+            }}
             onResourceDeleted={(nodeId) => {
               setBlueprintNode((prev) =>
                 prev && prev.id === nodeId ? null : prev,
               );
               setBlueprintReload((k) => k + 1);
+              setRefreshKey((k) => k + 1);
             }}
             onNavigateToRef={setBlueprintPanTo}
           />
@@ -447,6 +399,7 @@ export default function Home() {
           <ResourceInspector
             item={selectedItem}
             change={selectedChange}
+            activeLeaf={activeLeaf}
             onClose={() => {
               setSelected(null);
               setSelectedItem(null);
