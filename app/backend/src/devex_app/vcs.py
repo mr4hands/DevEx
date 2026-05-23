@@ -3,8 +3,11 @@ promote logic is unit-testable without touching a real repo."""
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from collections.abc import Callable, Sequence
+
+log = logging.getLogger(__name__)
 
 Runner = Callable[[Sequence[str], str], str]
 
@@ -38,22 +41,24 @@ def _restore(
     repo_root: str,
     original: str,
     branch: str,
+    paths: Sequence[str],
 ) -> None:
-    """Best-effort cleanup: unstage, restore original branch, delete temp branch.
-
-    Each step is wrapped individually so a failure in one step does not prevent
-    the remaining steps from running, and none of them can mask the original
-    exception (caller re-raises after calling this).
-    """
-    for cmd in (
-        ["git", "reset", "--", "."],
+    """Best-effort restore so a failed promote never strands the working tree on
+    the temp branch. `git clean` is SCOPED to the promoted paths so it only
+    removes the files we just rendered, never the user's other untracked files.
+    Each step is isolated and logged (not raised) so the original PromoteError
+    stays the primary error."""
+    steps: list[list[str]] = [
+        ["git", "reset", "--", "."],            # unstage the `git add`
+        ["git", "clean", "-fd", "--", *paths],  # scoped remove: lets checkout succeed
         ["git", "checkout", original],
         ["git", "branch", "-D", branch],
-    ):
+    ]
+    for cmd in steps:
         try:
             run(cmd, repo_root)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 — cleanup is best-effort; keep PromoteError primary
+            log.warning("promote restore step failed: %s", " ".join(cmd), exc_info=True)
 
 
 def promote_branch(
@@ -74,6 +79,8 @@ def promote_branch(
     # Capture the current ref so we can restore it on failure.
     original = run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_root).strip()
     if original == "HEAD":  # detached HEAD — fall back to the full SHA
+        # Restoring to a SHA is acceptable; it leaves the repo in detached-HEAD
+        # state, which is the same state it started in.
         original = run(["git", "rev-parse", "HEAD"], repo_root).strip()
 
     run(["git", "fetch", "origin", base], repo_root)
@@ -92,5 +99,5 @@ def promote_branch(
         )
         return out.strip().splitlines()[-1].strip()
     except Exception:
-        _restore(run, repo_root, original, branch)
+        _restore(run, repo_root, original, branch, list(paths))
         raise

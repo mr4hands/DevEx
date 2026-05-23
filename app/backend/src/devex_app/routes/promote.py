@@ -55,9 +55,10 @@ def promote(req: PromoteRequest, owner: str = Depends(resolve_owner)) -> dict[st
         # starts clean. Drafts are left intact (only cleared on success below).
         for rel in rendered:
             shutil.rmtree(settings.devex_live_root / rel, ignore_errors=True)
+        tail = exc.output[-4000:]
         raise HTTPException(
             status_code=422,
-            detail=f"Promote aborted; repo restored. {exc}\n{exc.output}".strip(),
+            detail=f"Promote aborted; repo restored. {exc}\n{tail}".strip(),
         ) from exc
 
     # Clear promoted drafts + overlay leaves.

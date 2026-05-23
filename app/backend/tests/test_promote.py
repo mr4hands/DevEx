@@ -55,7 +55,7 @@ def test_promote_aborts_cleanly_when_vcs_fails(client, blueprint_env, monkeypatc
 
     res = client.post("/api/blueprint/promote", json={})
     assert res.status_code == 422, res.text
-    assert "checkov" in res.text
+    assert "checkov" in res.json()["detail"]
     # Rendered leaf removed so devex-live isn't left polluted.
     assert not (devex_live / "billing-prod-account/us-east-1/infra/net").exists()
     # Promote failed -> drafts NOT cleared.

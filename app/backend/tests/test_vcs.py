@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from devex_app import vcs
 
 
@@ -30,9 +32,6 @@ def test_open_pr_branches_off_main_and_targets_main():
     assert "--base" in pr and pr[pr.index("--base") + 1] == "main"
 
 
-import pytest
-
-
 def test_promote_branch_restores_original_branch_on_commit_failure():
     calls = []
 
@@ -59,3 +58,10 @@ def test_promote_branch_restores_original_branch_on_commit_failure():
     # A failed commit must not push or open a PR.
     assert not any(a[:2] == ["git", "push"] for a in calls)
     assert not any(a[:3] == ["gh", "pr", "create"] for a in calls)
+    # The render is cleaned (scoped) before we check out the original branch,
+    # so an untracked render can't block the restore.
+    clean_idx = next(i for i, a in enumerate(calls)
+                     if a[:3] == ["git", "clean", "-fd"])
+    checkout_orig_idx = next(i for i, a in enumerate(calls)
+                             if a[:2] == ["git", "checkout"] and a[-1] == "feat/work")
+    assert clean_idx < checkout_orig_idx
