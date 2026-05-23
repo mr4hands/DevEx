@@ -96,6 +96,9 @@ export function PlanDiff({
   focusAddress,
   root,
   onRootChange,
+  leaf,
+  onLeafChange,
+  leaves,
 }: {
   diff: PlanDiffResponse | null;
   loading: boolean;
@@ -110,6 +113,12 @@ export function PlanDiff({
    *  would do on apply. */
   root?: "default" | "blueprint";
   onRootChange?: (next: "default" | "blueprint") => void;
+  /** When root==="blueprint", the currently-selected leaf (or null for whole
+   *  blueprint). */
+  leaf?: string | null;
+  onLeafChange?: (leaf: string | null) => void;
+  /** Staged leaves available for per-leaf preview. */
+  leaves?: string[];
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedModules, setCollapsedModules] = useState<Set<string>>(new Set());
@@ -225,6 +234,24 @@ export function PlanDiff({
               >
                 blueprint
               </button>
+              <span className="text-border">·</span>
+            </>
+          )}
+          {root === "blueprint" && onLeafChange && (
+            <>
+              <select
+                value={leaf ?? ""}
+                onChange={(e) => onLeafChange(e.target.value || null)}
+                className="text-[10px] font-mono rounded-sm border border-border bg-background px-1.5 h-6 outline-none focus:border-accent"
+                title="Preview a single staged leaf"
+              >
+                <option value="">whole blueprint</option>
+                {(leaves ?? []).map((l) => (
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
+                ))}
+              </select>
               <span className="text-border">·</span>
             </>
           )}

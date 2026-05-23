@@ -13,6 +13,7 @@ import { ResourceInspector } from "@/components/ResourceInspector";
 import { ResourceTree, inventoryToResource } from "@/components/ResourceTree";
 import {
   discardDraft,
+  fetchBlueprintResources,
   fetchPlanDiff,
   promoteDrafts,
   setComponentOverride,
@@ -140,6 +141,8 @@ export default function Home() {
   // Which workspace the Plan tab is currently looking at. Flipping to
   // "blueprint" surfaces the canvas's `live/blueprint/` workspace.
   const [planRoot, setPlanRoot] = useState<PlanRoot>("default");
+  const [planLeaf, setPlanLeaf] = useState<string | null>(null);
+  const [stagedLeaves, setStagedLeaves] = useState<string[]>([]);
   const planAbortRef = useRef<AbortController | null>(null);
 
   const runPlan = useCallback(async () => {
@@ -149,7 +152,7 @@ export default function Home() {
     setPlanLoading(true);
     setPlanError(null);
     try {
-      setPlanDiff(await fetchPlanDiff(ac.signal, planRoot));
+      setPlanDiff(await fetchPlanDiff(ac.signal, planRoot, planLeaf ?? undefined));
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
       setPlanError((e as Error).message);
@@ -159,7 +162,7 @@ export default function Home() {
         planAbortRef.current = null;
       }
     }
-  }, [planRoot]);
+  }, [planRoot, planLeaf]);
 
   // Run an initial plan on mount + whenever the workspace selector
   // changes, so flipping to "blueprint" actually fetches a blueprint
@@ -220,6 +223,21 @@ export default function Home() {
     const t = window.setTimeout(() => setPlanFocusAddress(null), 1500);
     return () => window.clearTimeout(t);
   }, [planFocusAddress]);
+
+  // Populate stagedLeaves from the overlay's unique leaf paths. Refreshes
+  // on mount + after every blueprint reload (e.g., after a draft is saved).
+  useEffect(() => {
+    const ac = new AbortController();
+    fetchBlueprintResources(ac.signal)
+      .then((res) => {
+        const uniq = Array.from(
+          new Set(res.resources.map((r) => r.leaf).filter(Boolean) as string[]),
+        ).sort();
+        setStagedLeaves(uniq);
+      })
+      .catch(() => setStagedLeaves([]));
+    return () => ac.abort();
+  }, [blueprintReload]);
 
   return (
     <main className="flex flex-1 min-h-0 h-screen">
@@ -324,7 +342,13 @@ export default function Home() {
             onRunPlan={runPlan}
             focusAddress={planFocusAddress}
             root={planRoot}
-            onRootChange={setPlanRoot}
+            onRootChange={(r) => {
+              setPlanRoot(r);
+              if (r !== "blueprint") setPlanLeaf(null);
+            }}
+            leaf={planLeaf}
+            onLeafChange={setPlanLeaf}
+            leaves={stagedLeaves}
           />
         )}
       </section>
