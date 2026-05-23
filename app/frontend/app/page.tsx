@@ -96,8 +96,8 @@ export default function Home() {
   // the eye next to `vpc_id = aws_vpc.main.id`, we set this to
   // `aws_vpc.main` and the canvas pans + selects the matching node.
   const [blueprintPanTo, setBlueprintPanTo] = useState<string | null>(null);
-  // Set by the "commit to PR" button — the ChatPanel auto-sends this
-  // as a user message, driving the agent to promote the blueprint.
+  // Set by the tree's "discover" button — the ChatPanel auto-sends this as a
+  // user message, driving the agent to enumerate unmanaged AWS resources.
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
   const handlePromote = useCallback(async () => {
@@ -235,7 +235,12 @@ export default function Home() {
         ).sort();
         setStagedLeaves(uniq);
       })
-      .catch(() => setStagedLeaves([]));
+      .catch((e: Error) => {
+        // Don't clobber good data when the in-flight fetch is aborted by a
+        // reload bump — the replacement fetch will repopulate.
+        if (e.name === "AbortError") return;
+        setStagedLeaves([]);
+      });
     return () => ac.abort();
   }, [blueprintReload]);
 

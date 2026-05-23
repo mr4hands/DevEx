@@ -216,9 +216,11 @@ function CanvasInner({
         setNodes((prev) => {
           const reconciled = reconcileNodes(prev, res.resources);
           newArrivalIds = reconciled.newArrivals;
-          // Overlay has no persisted positions; auto-layout keeps the graph
-          // readable. Un-saved client drops keep their dropped position via
-          // reconcileNodes (they aren't in `res.resources`).
+          // The overlay returns no positions, so auto-layout runs on every
+          // reload to keep the graph readable. This re-lays-out everything,
+          // including un-saved client drops (a deliberate Phase 2b tradeoff —
+          // no position sidecar); their data/selection survive, not their
+          // exact dropped coordinates.
           return autoLayoutNodes(reconciled.nodes, newEdges);
         });
         setEdges(newEdges);
